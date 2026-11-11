@@ -1,0 +1,16 @@
+<resources>
+    <string name="carlink_experiment_title">Carlink input (experimental)</string>
+    <string name="carlink_experiment_description">Target: Carlink on this phone → wireless CarPlay. Authentication, WFD and media ingestion code is present; stock same-device discovery/start and head-unit certification are not implemented. Connection may remain waiting. Xiaomi, vivo and your receiver have not passed end-to-end validation. CarPlay requires an actual decodable source frame first. Touch return and calls are not supported yet.</string>
+    <string name="carlink_source_carlife">Existing CarLife input</string>
+    <string name="carlink_source_carlink">Experimental ICCOA Carlink input</string>
+    <string name="carlink_switch_when_idle">Disconnect CarPlay and stop the CarLife self-test before changing input. Carlink mode does not automatically fall back to CarLife.</string>
+    <string name="carlink_status_idle">Stopped</string>
+    <string name="carlink_receiver_status">Stage: %1$s\nVideo: %2$d frames · AAC: %3$d frames\nSize: %4$d × %5$d\nSession PIN: %6$s (excluded from reports)</string>
+    <string name="carlink_start_receiver">Start local receiver (wait up to two minutes)</string>
+    <string name="carlink_stop_receiver">Stop receiver</string>
+    <string name="carlink_open_xiaomi_settings">Open Xiaomi CarWith settings</string>
+    <string name="carlink_share_status">Share receiver status</string>
+    <string name="carlink_notification">Waiting for local Carlink input; automatic bootstrap is not implemented</string>
+    <string name="carlink_source_not_ready">No decodable Carlink video has arrived. Check the experimental receiver first.</string>
+    <string name="carlink_audio_choice">\nCarlink audio uses the local receiver without screen-capture permission; audible output still needs testing.</string>
+</resources>

@@ -21,6 +21,15 @@ mcarplay receives native CarWith video and audio on the phone, sends them to the
 receiver, and routes receiver touch events back to CarWith. The displayed
 interface is CarWith, rather than the iOS CarPlay application interface.
 
+## Carlink development branch
+
+The `carlink` branch adds an experimental ICCOA receiver and forwards its H.264/AAC
+media into mcarplay's CarPlay output. The goal is same-phone operation on Xiaomi,
+vivo and other ICCOA devices without a conversion box. **OEM same-device bootstrap
+and receiver certificates remain unimplemented; no Xiaomi/vivo or Mercedes end-to-end
+compatibility is established.** Select the source under Diagnostics → “Carlink input (experimental)”.
+The existing CarLife path remains the default. See [development status and testing](docs/CARLINK-DEVELOPMENT.md).
+
 ## Status
 
 Experimental. Source-side CarWith streaming has been tested across HyperOS OS1-OS4 in

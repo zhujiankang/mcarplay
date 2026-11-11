@@ -1596,6 +1596,17 @@
                     android:layout_marginStart="54dp"
                     android:background="@color/ui_track" />
 
+                <TextView
+                    android:id="@+id/btnCarlinkInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="48dp"
+                    android:padding="14dp"
+                    android:background="@drawable/bg_tbtn"
+                    android:text="@string/carlink_experiment_title"
+                    android:textColor="@color/m3_primary"
+                    android:textSize="14sp" />
+
                 <!-- 副机 HU 模拟：仅验证 CarWith 无线发现链，不代表 CarPlay 出流。 -->
                 <LinearLayout
                     android:id="@+id/rowExternalHu"

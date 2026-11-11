@@ -1,0 +1,16 @@
+<resources>
+    <string name="carlink_experiment_title">Carlink 输入（实验）</string>
+    <string name="carlink_experiment_description">目标是同机 Carlink → 无线 CarPlay。已加入认证、WFD 和媒体接入代码；尚未实现原厂同机发现/启动及车机证书，可能停在等待连接。小米、vivo 和你的车机尚未通过整链路验证。真实视频到达后才允许选择此源启动 CarPlay。当前不支持触控回传或通话。</string>
+    <string name="carlink_source_carlife">现有 CarLife 输入</string>
+    <string name="carlink_source_carlink">ICCOA Carlink 实验输入</string>
+    <string name="carlink_switch_when_idle">断开 CarPlay 并停止 CarLife 自检后可切换输入源。Carlink 模式不会自动改用 CarLife。</string>
+    <string name="carlink_status_idle">未启动</string>
+    <string name="carlink_receiver_status">阶段：%1$s\n视频：%2$d 帧 · AAC：%3$d 帧\n尺寸：%4$d × %5$d\n本次 PIN：%6$s（不写入报告）</string>
+    <string name="carlink_start_receiver">启动本机接收（等待最多两分钟）</string>
+    <string name="carlink_stop_receiver">停止接收</string>
+    <string name="carlink_open_xiaomi_settings">打开小米 CarWith 设置</string>
+    <string name="carlink_share_status">分享接收状态</string>
+    <string name="carlink_notification">正在等待本机 Carlink 输入；尚未实现自动建链</string>
+    <string name="carlink_source_not_ready">Carlink 源尚未收到可解码视频，请先检查实验接收页。</string>
+    <string name="carlink_audio_choice">\nCarlink 音频经本机接收，不需要录屏授权；是否有声仍需实测。</string>
+</resources>

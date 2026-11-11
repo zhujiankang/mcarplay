@@ -21,6 +21,7 @@ import com.mcarplay.app.bt.Iap2BluetoothClient
 import com.mcarplay.app.bt.Iap2BluetoothServer
 import com.mcarplay.app.bt.TargetDevicePrefs
 import com.mcarplay.app.carlife.CarLifeAudioEvent
+import com.mcarplay.app.carlife.CarLifeChannel
 import com.mcarplay.app.carlife.CarLifeJoinGate
 import com.mcarplay.app.carlife.CarLifeLaunchStrategy
 import com.mcarplay.app.carlife.CarLifeLauncher
@@ -28,6 +29,9 @@ import com.mcarplay.app.carlife.CarLifeProtocol
 import com.mcarplay.app.carlife.CarLifeSession
 import com.mcarplay.app.carlife.CarLifeSessionRegistry
 import com.mcarplay.app.carlife.mapCarLifeTouch
+import com.mcarplay.app.carlife.spsDimensions
+import com.mcarplay.app.carlink.CarlinkRuntime
+import com.mcarplay.app.carlink.ProjectionInputPrefs
 import com.mcarplay.app.compat.CompatibilityPrefs
 import com.mcarplay.app.compat.PassatReturnPolicy
 import com.mcarplay.app.compat.PassatReturnStrategy
@@ -411,6 +415,12 @@ object SessionController {
 
     private val carLifeSessions = CarLifeSessionRegistry()
 
+    @Volatile
+    private var carlinkForSession = false
+
+    @Volatile
+    private var carlinkOutput: AutoCloseable? = null
+
     /** Formal CarPlay session currently bridging Xiaomi CarWith. */
     @Volatile
     private var formalCarLifeSession: CarLifeSession? = null
@@ -776,7 +786,35 @@ object SessionController {
         )
     }
 
+    private fun attachCarlinkOutput(
+        client: AirPlayClient,
+        sender: VideoSender,
+        attempt: String,
+        cancelled: () -> Boolean,
+    ): AutoCloseable =
+        CarlinkRuntime.attach(
+            video = { frame ->
+                if (currentClient !== client || videoSender !== sender || cancelled()) {
+                    false
+                } else {
+                    ConnectionDiagnostics.timeline.sourceFrame(attempt)
+                    frame.sps?.let(::spsDimensions)?.let { (width, height) ->
+                        if (sender.isNewSourceSize(width, height)) sender.setVideoDimensions(width, height)
+                    }
+                    sender.submitExternalFrame(frame)
+                }
+            },
+            pcm = { bytes, rate, channels ->
+                if (audioEnabledForSession && currentClient === client && videoSender === sender && !cancelled()) {
+                    nativeAudioBridge?.submit(CarLifeChannel.MEDIA, CarLifeAudioEvent.Pcm(bytes, rate, channels))
+                }
+            },
+            ended = { if (currentClient === client && videoSender === sender) sender.stop() },
+        )
+
     private fun stopFormalCarLife() {
+        carlinkOutput?.close()
+        carlinkOutput = null
         carLifeOutput = null
         currentCarLifeSession?.let {
             it.stop()
@@ -890,6 +928,12 @@ object SessionController {
         }
         if (!automatic) AutoConnectPrefs.clearManualStop(context)
         val alreadyRunning = isSessionRunning()
+        if (!alreadyRunning) carlinkForSession = ProjectionInputPrefs.isCarlink(context)
+        if (carlinkForSession && !CarlinkRuntime.status().ready) {
+            appendLog("CARLINK: SOURCE_NOT_READY; CarLife fallback disabled")
+            phaseHint = context.getString(R.string.carlink_source_not_ready)
+            return
+        }
         val diagnosticAttempt =
             if (isSessionRunning()) {
                 ConnectionDiagnostics.timeline.snapshot()?.id ?: ConnectionDiagnostics.begin("user_start")
@@ -2216,7 +2260,7 @@ object SessionController {
             return false
         }
         val projection = CarPlayService.mediaProjection
-        val useNativeCarLifeAudio = CarLifeLauncher.isAvailable(context)
+        val useNativeCarLifeAudio = carlinkForSession || CarLifeLauncher.isAvailable(context)
         if (projection == null && !useNativeCarLifeAudio) {
             appendLog(
                 "AUDIO: 缺少投屏权限（播放捕获依赖 MediaProjection）——音频通道未启动。" +
@@ -3794,7 +3838,13 @@ object SessionController {
                                     pendingVideoH = streamH
                                     val carLifeSource =
                                         object : ExternalVideoSource {
-                                            override fun requestKeyFrame(): Boolean = currentCarLifeSession?.requestKeyFrame() == true
+                                            override fun requestKeyFrame(): Boolean =
+                                                if (carlinkForSession) {
+                                                    CarlinkRuntime.requestKeyFrame()
+                                                } else {
+                                                    currentCarLifeSession?.requestKeyFrame() ==
+                                                        true
+                                                }
                                         }
 
                                     fun newScreenSender(screenInfo: AirPlayClient.ScreenStreamInfo): VideoSender {
@@ -3844,6 +3894,8 @@ object SessionController {
                                                         releaseCarLifeSession(it)
                                                     }
                                                     if (carLifeOutput?.sender === sender) carLifeOutput = null
+                                                    carlinkOutput?.close()
+                                                    carlinkOutput = null
                                                     StreamingWifiLock.release()
                                                     // 先于其余收尾：「息屏后多久结束」以推流终止时刻为准
                                                     appContext?.let(ScreenLockMonitor::stop)
@@ -3887,21 +3939,27 @@ object SessionController {
                                             }
                                         val previousSender =
                                             synchronized(this) {
-                                                val previousOutput = carLifeOutput ?: return@recover ScreenRecoveryResult.ABORTED
                                                 val previous = videoSender ?: return@recover ScreenRecoveryResult.ABORTED
+                                                val sourceAvailable =
+                                                    if (carlinkForSession) {
+                                                        carlinkOutput != null && CarlinkRuntime.status().ready
+                                                    } else {
+                                                        carLifeOutput?.sender === previous && currentCarLifeSession === carLife
+                                                    }
                                                 if (wasCancelled() ||
                                                     currentClient !== client ||
-                                                    previousOutput.sender !== previous ||
-                                                    currentCarLifeSession !== carLife ||
+                                                    !sourceAvailable ||
                                                     !client.modes.phoneOwnsScreen
                                                 ) {
                                                     return@recover ScreenRecoveryResult.ABORTED
                                                 }
                                                 carLifeOutput = null
+                                                carlinkOutput?.close()
+                                                carlinkOutput = null
                                                 videoSender = null
                                                 previous
                                             }
-                                        appendLog("SCREEN: 回原车界面后的 requestUI——仅重建主屏流，保留 CarWith 与音频")
+                                        appendLog("SCREEN: requestUI 重建主屏流，保留当前输入源与音频")
                                         previousSender.stop()
                                         if (wasCancelled() || !client.teardownScreenStream()) return@recover failure()
                                         if (wasCancelled()) return@recover ScreenRecoveryResult.ABORTED
@@ -3927,7 +3985,17 @@ object SessionController {
                                                 if (wasCancelled() || currentClient !== client || videoSender !== replacement) {
                                                     return@recover ScreenRecoveryResult.ABORTED
                                                 }
-                                                carLifeOutput = CarLifeOutput(diagnosticAttempt, replacement)
+                                                if (carlinkForSession) {
+                                                    carlinkOutput =
+                                                        attachCarlinkOutput(
+                                                            client,
+                                                            replacement,
+                                                            diagnosticAttempt,
+                                                            ::wasCancelled,
+                                                        )
+                                                } else {
+                                                    carLifeOutput = CarLifeOutput(diagnosticAttempt, replacement)
+                                                }
                                             }
                                             client.modes.onScreenStreamRestored()
                                             replacement.requestKeyFrame(fromReceiver = false)
@@ -3965,7 +4033,23 @@ object SessionController {
                                     return@run
                                 }
                                 ConnectionDiagnostics.timeline.stage(diagnosticAttempt, ConnectionStage.CARWITH)
-                                if (host != null) {
+                                if (host != null && carlinkForSession) {
+                                    val sender = sessionVideoSender
+                                    if (sender.start {}) {
+                                        streamingDiagnosticAttempt = diagnosticAttempt
+                                        StreamingWifiLock.acquire(context)
+                                        ScreenLockMonitor.start(
+                                            context,
+                                            log = ::appendLog,
+                                            note = { ConnectionDiagnostics.timeline.note(diagnosticAttempt, it) },
+                                        )
+                                        carlinkOutput?.close()
+                                        carlinkOutput = attachCarlinkOutput(client, sender, diagnosticAttempt, ::wasCancelled)
+                                        appendLog("CARLINK: CarPlay output attached; only actual source media is forwarded")
+                                    } else {
+                                        appendLog("CARLINK: CarPlay video sender failed")
+                                    }
+                                } else if (host != null) {
                                     val videoW = pendingVideoW
                                     val videoH = pendingVideoH
                                     val output = CarLifeOutput(diagnosticAttempt, sessionVideoSender)

@@ -20,6 +20,14 @@ QQ 反馈群：**1128172672**
 mcarplay 在手机本机接收 CarWith 的原生视频和音频，发送到接收端，再把车机触控回传给
 CarWith。车机显示的是 CarWith 界面。
 
+## Carlink 开发分支
+
+`carlink` 分支加入实验性 ICCOA 接收端，将收到的 H.264/AAC 媒体送入 mcarplay 的
+CarPlay 输出。目标是让小米、vivo 等 ICCOA 手机无需转换盒，直接同机桥接。
+**原厂同机发现/启动和车端证书仍未实现，尚无小米/vivo 或奔驰整链路兼容结论。**
+可通过「诊断 → Carlink 输入（实验）」选择输入源，现有 CarLife 路径仍是默认选项。
+详见[开发状态和验证步骤](docs/CARLINK-DEVELOPMENT.md)。
+
 ## 当前进度
 
 项目处于实验阶段。截至 2026 年 11 月 4 日，已在 ARM64 AVD 上完成 HyperOS OS1–OS4

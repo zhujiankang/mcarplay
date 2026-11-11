@@ -1,0 +1,4 @@
+<resources>
+    <item name="carlink_choice_carlife" type="id" />
+    <item name="carlink_choice_carlink" type="id" />
+</resources>

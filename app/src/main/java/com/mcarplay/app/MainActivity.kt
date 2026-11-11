@@ -32,6 +32,9 @@ import com.mcarplay.app.bt.TargetDevicePrefs
 import com.mcarplay.app.carlife.CarLifeDiagnostics
 import com.mcarplay.app.carlife.CarLifeLauncher
 import com.mcarplay.app.carlife.ExternalHuController
+import com.mcarplay.app.carlink.CarlinkActivity
+import com.mcarplay.app.carlink.CarlinkRuntime
+import com.mcarplay.app.carlink.ProjectionInputPrefs
 import com.mcarplay.app.compat.ReceiverDetection
 import com.mcarplay.app.compat.ReceiverDetectionRuntime
 import com.mcarplay.app.compat.VehiclePreset
@@ -301,7 +304,9 @@ class MainActivity : AppCompatActivity() {
             title = getString(R.string.ma_audio_choice_title),
             message =
                 getString(R.string.ma_audio_choice_body) +
-                    if (CarLifeLauncher.isAvailable(this)) {
+                    if (ProjectionInputPrefs.isCarlink(this)) {
+                        getString(R.string.carlink_audio_choice)
+                    } else if (CarLifeLauncher.isAvailable(this)) {
                         getString(R.string.ma_audio_choice_carwith)
                     } else {
                         getString(R.string.ma_audio_choice_projection)
@@ -335,7 +340,12 @@ class MainActivity : AppCompatActivity() {
      * 任一不满足都弹窗引导（蓝牙关闭时可一键跳系统蓝牙设置），通过后回调继续。
      */
     private fun ensureBluetoothReady(onReady: () -> Unit) {
-        if (!CarLifeLauncher.isAvailable(this)) {
+        if (ProjectionInputPrefs.isCarlink(this) && !CarlinkRuntime.status().ready) {
+            snack(getString(R.string.carlink_source_not_ready))
+            startActivity(Intent(this, CarlinkActivity::class.java))
+            return
+        }
+        if (!ProjectionInputPrefs.isCarlink(this) && !CarLifeLauncher.isAvailable(this)) {
             ConnectionDiagnostics.precheck(DiagnosticCode.CARWITH_FAILED)
             DarkMessageDialog.show(
                 this,
@@ -493,7 +503,7 @@ class MainActivity : AppCompatActivity() {
             title = getString(R.string.ma_disconnect_title),
             message =
                 getString(R.string.ma_disconnect_body) +
-                    if (CarLifeLauncher.isAvailable(this)) {
+                    if (ProjectionInputPrefs.isCarlink(this) || CarLifeLauncher.isAvailable(this)) {
                         ""
                     } else {
                         getString(R.string.ma_disconnect_projection_note)
@@ -567,7 +577,7 @@ class MainActivity : AppCompatActivity() {
             startConnectionNow()
             return
         }
-        if (CarLifeLauncher.isAvailable(this) || CarPlayService.mediaProjection != null) {
+        if (ProjectionInputPrefs.isCarlink(this) || CarLifeLauncher.isAvailable(this) || CarPlayService.mediaProjection != null) {
             log("MODE: 已选择开启声音（音频来源已就绪）")
             startConnectionNow()
             return
@@ -628,7 +638,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun continueAfterBtIdentityCheck() {
         runOnUiThread {
-            if (CarLifeLauncher.isAvailable(this) && CarLifeLauncher.backgroundStartAllowed(this) == false) {
+            if (!ProjectionInputPrefs.isCarlink(this) &&
+                CarLifeLauncher.isAvailable(this) &&
+                CarLifeLauncher.backgroundStartAllowed(this) == false
+            ) {
                 log("CARLIFE: 未允许「后台弹出界面」，CarPlay 会话建立后可能无法打开 CarWith 入口")
                 showBackgroundStartGuidance()
             } else {
@@ -1197,6 +1210,9 @@ class MainActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.btnCarWithSettings).setOnClickListener {
             if (!CarLifeLauncher.openSettings(this)) snack(getString(R.string.ma_carwith_settings_failed))
         }
+        findViewById<TextView>(R.id.btnCarlinkInput).setOnClickListener {
+            startActivity(Intent(this, CarlinkActivity::class.java))
+        }
         findViewById<TextView>(R.id.btnWifi).setOnClickListener {
             val ssid = ssidInput.text.toString().trim()
             // 自动加入不可用时的手动兜底：密码先进剪贴板，系统 WLAN 页粘贴即可
@@ -1228,7 +1244,7 @@ class MainActivity : AppCompatActivity() {
 
         // 车机侧声音授权（原「申请投屏权限」）：RECORD_AUDIO + MediaProjection 一起请求
         btnAudio.setOnClickListener {
-            if (CarLifeLauncher.isAvailable(this)) {
+            if (ProjectionInputPrefs.isCarlink(this) || CarLifeLauncher.isAvailable(this)) {
                 SessionController.audioEnabledForSession = true
                 // 音频 SETUP 是控制通道上的网络请求，不能在主线程发
                 Bg.run("audio-native-start") { SessionController.maybeStartAudioNow(applicationContext) }
@@ -1468,6 +1484,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun toggleCarLifeSelfTest() {
+        if (ProjectionInputPrefs.isCarlink(this)) {
+            startActivity(Intent(this, CarlinkActivity::class.java))
+            return
+        }
         val running = SessionController.runningDiagnosticCarLifeSession != null
         if (running) {
             CarPlayService.stopDiagnostic(applicationContext)
@@ -1665,8 +1685,10 @@ class MainActivity : AppCompatActivity() {
     /** 连接准备计数：CarWith/CarLife 组件 / 热点 SSID / 蓝牙配对 / 音频来源。 */
     private fun updateReadyRow() {
         var ready = 0
+        val carlink = ProjectionInputPrefs.isCarlink(this)
+        val sourceReady = if (carlink) CarlinkRuntime.status().ready else CarLifeLauncher.isAvailable(this)
         val shizukuState = ShizukuGate.state(this)
-        if (CarLifeLauncher.isAvailable(this)) ready++
+        if (sourceReady) ready++
         updateShizukuRow(shizukuState)
         updateBtIdentityRow(shizukuState)
         if (ssidInput.text
@@ -1691,7 +1713,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         if (bondedCount > 0) ready++
-        if (CarLifeLauncher.isAvailable(this) || CarPlayService.mediaProjection != null) ready++
+        if (sourceReady || (!carlink && CarPlayService.mediaProjection != null)) ready++
 
         btBadge.visibility = if (bondedCount >= 0) View.VISIBLE else View.GONE
         if (bondedCount >= 0) {
@@ -1737,11 +1759,11 @@ class MainActivity : AppCompatActivity() {
         }
         val projectionReady =
             CarPlayService.mediaProjection != null
-        if (CarLifeLauncher.isAvailable(this)) {
+        if (carlink || CarLifeLauncher.isAvailable(this)) {
             val enabled = SessionController.audioEnabledForSession
             btnAudio.text = getString(if (enabled) R.string.ma_audio_enabled else R.string.ma_audio_on)
             btnAudio.setTextColor(getColor(if (enabled) R.color.m3_ok else R.color.m3_primary))
-            audioDesc.text = getString(R.string.ma_audio_carwith_desc)
+            audioDesc.text = getString(if (carlink) R.string.carlink_audio_choice else R.string.ma_audio_carwith_desc)
         } else if (projectionReady) {
             btnAudio.text = getString(R.string.ma_audio_granted)
             btnAudio.setTextColor(getColor(R.color.m3_ok))

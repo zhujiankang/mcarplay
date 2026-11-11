@@ -1,10 +1,16 @@
 # mcarplay：CarWith 转无线 CarPlay 实施计划
 
-更新：2026-11-06。目标是在小米手机上取得 CarWith 的真实画面、声音和触控，再由 mcarplay 充当 CarPlay 手机端，连接支持无线 CarPlay 的车机。
+更新：2026-11-11。`carlink` 分支目标扩展为小米、vivo 等 ICCOA 手机同机 Carlink → 无线 CarPlay，不加转换盒；原有 CarLife 路径保留。真实车机兼容仍须逐一验收。
 
 首版完成范围为：手机内手动发起连接、CarWith 画面、车机扬声器声音、车机触控回传。自动重连、车机麦克风、通话和语音上行不作为首版承诺。未在真实车机验证前，不声明任何车型“已适配”。
 
 ## 当前基线与结论
+
+- **11 月 11 日 Carlink 分支开发：** 基于 `ab0cb93`，加入独立编写的 AUTH/CONTROL、RTSP/WFD、
+  TCP RTP/MPEG-TS、H.264/AAC 接收与现有 CarPlay 输出适配，提供显式输入源切换和前台接收页。
+  仅收到带参数的 IDR 后放行 CarPlay，禁止静默切回 CarLife。原厂同机启动、车机证书、UIBC 触控仍缺失；
+  未取得 CarWith/vivo 实际入站或奔驰车机实测证据。standard 920 项（含新增 Carlink 21 项）、remote bridge 24 项，
+  Spotless、standard lint/debug APK 构建与 APK 签名校验通过。完整边界见 `docs/CARLINK-DEVELOPMENT.md`。
 
 - **11 月 6 日 v0.1.6 正式版（本地构建，未推 tag）：** 汇总 PR #42 屏幕归属门控、#44 主音频仲裁、#43 手机端 SDP 生命周期与 #41 CarWith 入口诊断；
   新增「上车自动播放音乐」开关（默认开，关闭后连接窗口内拦截车机自动播放并暂停自行开始的音乐）。
