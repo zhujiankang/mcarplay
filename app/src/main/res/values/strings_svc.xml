@@ -12,4 +12,7 @@
     <string name="cl_waiting_first_frame">视频已初始化，等待首帧</string>
     <string name="cl_handshake_failed">握手失败</string>
     <string name="cl_handshaking">七口已连接，协议握手中</string>
+    <string name="notif_discovery_title">等待车机发现 CarPlay</string>
+    <string name="notif_discovery_text">蓝牙服务准备中或已发布，尚未建立 CarPlay；请先配对车机</string>
+    <string name="notif_stop">停止</string>
 </resources>

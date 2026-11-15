@@ -430,6 +430,7 @@ class Iap2BluetoothClient(
                     diagnosticEpoch,
                     targetProvider,
                     onAdapterStateChanged = onAdapterStateChanged,
+                    onBondStateChanged = { address, state -> inboundWait.bondChanged(address, state == BluetoothDevice.BOND_BONDED) },
                 ) {
                     running && generation.get() == myGeneration
                 }.also { it.start() },
@@ -552,6 +553,11 @@ class Iap2BluetoothClient(
                 }
                 // SDP 等待期间用户可能已停止或重启；旧轮不能再创建一个无法被 stop() 关闭的新 socket。
                 if (!running || generation.get() != myGeneration) return
+                // SDP 查询期间可能进入重新配对；此时不发 RFCOMM，也不干预音频配置文件。
+                if (runCatching { device.bondState }.getOrNull() != BluetoothDevice.BOND_BONDED) {
+                    inboundWait.connected(device.address)
+                    continue
+                }
                 // 已确认只接受车机回连：不再每 3 秒连一次（也不做下面的断开配置文件对照），只按间隔探测
                 if (inboundWait.skipOutbound(device.address)) continue
                 // 未知设备先保留 HFP/A2DP；只有已保存的本地策略或用户发起的一次对照才断开。
@@ -658,6 +664,11 @@ class Iap2BluetoothClient(
         myGeneration: Long,
         diagnosticEpoch: Long,
     ): BluetoothSocket? {
+        // 再检查一次：上层 SDP 后的检查与创建 socket 之间也可能收到 BONDING。
+        if (runCatching { device.bondState }.getOrNull() != BluetoothDevice.BOND_BONDED) {
+            inboundWait.connected(device.address)
+            return null
+        }
         val target = targetProvider()
         val trace =
             diagnostics.connectStarted(
@@ -729,11 +740,12 @@ class Iap2BluetoothClient(
         elapsedMs: Long,
     ) {
         val services = cachedUuids(device)
-        if (!inboundWait.failed(device.address, services, BluetoothFailure.reason(error), elapsedMs)) return
+        val stillBonded = runCatching { device.bondState }.getOrNull() == BluetoothDevice.BOND_BONDED
+        if (!inboundWait.failed(device.address, services, BluetoothFailure.reason(error), elapsedMs, bonded = stillBonded)) return
         log(
-            "BT-C: 「$name」不接受手机主动连入（SDP 无 …caff，${elapsedMs}ms 即 READ_FAILED" +
-                (if (InboundWaitPolicy.INBOUND_ONLY_SIGNATURE in services) "，带艾瑞泽 8 同款厂商服务" else "") +
-                "）——改为等待车机回连：请在车机蓝牙/CarPlay 设备列表中点选本机；" +
+            "BT-C: 「$name」主动连接快速失败（SDP 无 …caff，${elapsedMs}ms 即 READ_FAILED" +
+                (if (InboundWaitPolicy.INBOUND_ONLY_SIGNATURE in services) "，带回连策略参考 UUID" else "") +
+                "）——暂转入等待车机回连，可在车机蓝牙/CarPlay 列表中检查本机；" +
                 "每 ${InboundWaitPolicy.PROBE_INTERVAL_MILLIS / 1000} 秒仍试一次主动连接",
         )
         onAwaitingReceiverTap(name)

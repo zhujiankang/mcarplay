@@ -1695,3 +1695,11 @@ APK 指纹、完整矩阵、截图/日志的证据边界及同车换手机步骤
 - **已知：** 手机 Xiaomi 17 Pro Max，接收端 DiPlay；用户确认本次连接无问题。
 - **未记录：** 具体构建版本、HyperOS/CarWith/小米 CarLife/DiPlay 版本、连接步骤，以及视频、声音、触控各自是否覆盖。
   本条目只记录一次用户确认，不扩展为车机兼容或长期稳定性结论；WinPlay、macplay、艾瑞泽 8 与真车仍待回归。
+
+## 奔驰 GLC260 用户日志及 CarLife 方向更正
+
+用户目标更正为同机 CarWith → CarLife → 无线 CarPlay，试验实现独立放在 `mercedes-carlife`，不并入之前的 ICCOA 原型。用户称 2024 GLC260，有线/无线 CarPlay；iPhone 配对会出现 CarPlay 入口，Android 当前为“—”。MBUX 固件未提供。
+
+手机日志型号 `24129PN74C`，Android 16/API 36，用户称 HyperOS OS3.0，CarWith `4.0.9-20260629 (104000009)`、小米 CarLife `8.6.6 (258)`。已提供日志只证明本机 SDP 注册及失败的 RFCOMM 尝试；后续片段有 BONDING 期间继续尝试、快速 READ_FAILED、最终 BOND_NONE 和自动撤销监听，未证明苹果身份检查或 MFi 拒绝。没有持续 CarWith 视频、声音、触控通过的证据。
+
+新增预发布模式与回连窗口是待验证的候选修复，不是本车适配结论。实验步骤及与 CarPToCarL 1.2.51 的固定版本对比见 [分析报告](CARPTOCARL-MERCEDES-CARLIFE-REVIEW.zh-CN.md)。原始用户日志不提交仓库。

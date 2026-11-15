@@ -16,4 +16,6 @@
     <string name="sf_duck_off">导航时不压低音乐</string>
     <string name="sf_fps_set">帧率已切换为 %1$dfps</string>
     <string name="sf_fps_live">帧率已切换为 %1$dfps（实时生效）</string>
+    <string name="sf_carplay_discovery_on">已开启：请先打开本应用，再到车机配对</string>
+    <string name="sf_carplay_discovery_off">已关闭提前公告；额外服务将在下次连接撤销</string>
 </resources>

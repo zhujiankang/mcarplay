@@ -42,4 +42,6 @@
     <string name="sf_passat_retry">Selected: rebuild once on failure</string>
     <string name="sf_passat_disconnect">Selected: disconnect after repeated failures</string>
     <string name="sf_passat_norebuild">Selected: no stream rebuild on icon tap</string>
+    <string name="lay_carplay_discovery">Publish CarPlay before pairing (experimental)</string>
+    <string name="lay_carplay_discovery_desc">Keep Bluetooth services available after opening the app so the head unit can discover them during pairing. The extra service is a compatibility probe; Mercedes recognition is unverified. Turning this off removes the extra service on the next connection.</string>
 </resources>

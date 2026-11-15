@@ -48,6 +48,8 @@ class Iap2BluetoothServer(
     /** 目标车机（动态读取：拒绝非目标设备的连入；null=来者不拒）。 */
     private val targetProvider: () -> TargetDevicePrefs.Target? = { null },
     private val diagnostics: BluetoothDiagnostics = BluetoothDiagnostics({}),
+    /** 已接收真实 iAP2 后将提前公告提升为正式会话；用户停止时返回 false。 */
+    private val onIncomingSession: () -> Boolean = { true },
 ) {
     companion object {
         /**
@@ -58,7 +60,7 @@ class Iap2BluetoothServer(
         private const val SESSION_TIMEOUT_MILLIS = 60_000L
     }
 
-    private var diagnosticsEpoch = 0L
+    private val diagnosticsEpoch: Long get() = diagnostics.epoch()
     private val listener =
         PhoneSdpListener(
             open = ::openRecords,
@@ -104,11 +106,13 @@ class Iap2BluetoothServer(
         if (!hasPermission()) throw SecurityException("BLUETOOTH_CONNECT not granted")
         val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter
         if (adapter?.isEnabled != true) throw IOException("Bluetooth adapter unavailable")
-        val diagnosticEpoch = diagnostics.epoch().also { diagnosticsEpoch = it }
-        return PhoneSdpRecords.open { name, uuid ->
+        val diagnosticEpoch = diagnostics.epoch()
+        return PhoneSdpRecords.open(includeWirelessIap2 = CarPlayDiscoveryPrefs.enabled(context)) { name, uuid ->
             val service =
                 if (uuid == PhoneSdpRecords.IPHONE_IAP2_UUID) {
                     BluetoothDiagnostics.Service.IAP2
+                } else if (uuid == PhoneSdpRecords.WIRELESS_IAP2_UUID) {
+                    BluetoothDiagnostics.Service.WIRELESS_IAP2
                 } else {
                     BluetoothDiagnostics.Service.CARPLAY
                 }
@@ -129,13 +133,21 @@ class Iap2BluetoothServer(
         diagnostics.listener(diagnosticEpoch, BluetoothDiagnostics.Service.IAP2, listening = true)
         diagnostics.listener(diagnosticEpoch, BluetoothDiagnostics.Service.CARPLAY, listening = true)
         log("BT: 监听 iAP2 并发布无线 CarPlay 手机能力，等待接收端回连…")
-        Thread({ acceptLoop(records, diagnosticEpoch) }, "iap2-bt-accept").apply {
+        Thread({ acceptLoop(records) }, "iap2-bt-accept").apply {
             isDaemon = true
             start()
         }
-        Thread({ acceptCapabilityLoop(records, diagnosticEpoch) }, "carplay-sdp-accept").apply {
+        Thread({ acceptCapabilityLoop(records, records.carPlay, BluetoothDiagnostics.Service.CARPLAY) }, "carplay-sdp-accept").apply {
             isDaemon = true
             start()
+        }
+        records.wirelessIap2?.let { probe ->
+            diagnostics.listener(diagnosticEpoch, BluetoothDiagnostics.Service.WIRELESS_IAP2, listening = true)
+            log("BT: Wireless iAP v2 兼容探针已发布（占位服务，连入后关闭；不代表车机已识别）")
+            Thread({ acceptCapabilityLoop(records, probe, BluetoothDiagnostics.Service.WIRELESS_IAP2) }, "wireless-iap2-probe").apply {
+                isDaemon = true
+                start()
+            }
         }
     }
 
@@ -162,7 +174,6 @@ class Iap2BluetoothServer(
 
     private fun listenerFailed(
         records: PhoneSdpRecords<BluetoothServerSocket>,
-        diagnosticEpoch: Long,
         service: BluetoothDiagnostics.Service,
         error: IOException,
     ) {
@@ -170,7 +181,7 @@ class Iap2BluetoothServer(
         val token =
             listener.failed(records) {
                 retired = true
-                diagnostics.listener(diagnosticEpoch, service, listening = false, error = error)
+                diagnostics.listener(diagnostics.epoch(), service, listening = false, error = error)
                 log("BT: ${service.name} 监听结束，本机公告已退役 - ${BluetoothFailure.describe(error)}")
             }
         if (token != null) {
@@ -181,16 +192,13 @@ class Iap2BluetoothServer(
     }
 
     @SuppressLint("MissingPermission")
-    private fun acceptLoop(
-        records: PhoneSdpRecords<BluetoothServerSocket>,
-        diagnosticEpoch: Long,
-    ) {
+    private fun acceptLoop(records: PhoneSdpRecords<BluetoothServerSocket>) {
         while (listener.isCurrent(records)) {
             val socket: BluetoothSocket =
                 try {
                     records.iap2.accept()
                 } catch (error: IOException) {
-                    listenerFailed(records, diagnosticEpoch, BluetoothDiagnostics.Service.IAP2, error)
+                    listenerFailed(records, BluetoothDiagnostics.Service.IAP2, error)
                     break
                 }
             if (!listener.isCurrent(records)) {
@@ -213,7 +221,7 @@ class Iap2BluetoothServer(
                     null
                 }
             val match = peerMatch(target, peerAddress)
-            diagnostics.incoming(diagnosticEpoch, BluetoothDiagnostics.Service.IAP2, peerAddress, match)
+            diagnostics.incoming(diagnostics.epoch(), BluetoothDiagnostics.Service.IAP2, peerAddress, match)
             if (target != null && match == BluetoothDiagnostics.PeerMatch.OTHER) {
                 log(
                     "BT: 忽略非目标设备连入 name=$peerName addr=${peerAddress ?: "?"}" +
@@ -235,23 +243,24 @@ class Iap2BluetoothServer(
     @SuppressLint("MissingPermission")
     private fun acceptCapabilityLoop(
         records: PhoneSdpRecords<BluetoothServerSocket>,
-        diagnosticEpoch: Long,
+        serverSocket: BluetoothServerSocket,
+        service: BluetoothDiagnostics.Service,
     ) {
         while (listener.isCurrent(records)) {
             try {
-                records.carPlay.accept().use { socket ->
+                serverSocket.accept().use { socket ->
                     if (listener.isCurrent(records)) {
                         val address = runCatching { socket.remoteDevice?.address }.getOrNull()
                         diagnostics.incoming(
-                            diagnosticEpoch,
-                            BluetoothDiagnostics.Service.CARPLAY,
+                            diagnostics.epoch(),
+                            service,
                             address,
                             peerMatch(targetProvider(), address),
                         )
                     }
                 }
             } catch (error: IOException) {
-                listenerFailed(records, diagnosticEpoch, BluetoothDiagnostics.Service.CARPLAY, error)
+                listenerFailed(records, service, error)
                 break
             }
         }
@@ -281,6 +290,7 @@ class Iap2BluetoothServer(
             BtSessionGate.inboundActive = true
         }
         try {
+            if (!onIncomingSession()) return
             channel.runSenderSession(
                 context,
                 SESSION_TIMEOUT_MILLIS,

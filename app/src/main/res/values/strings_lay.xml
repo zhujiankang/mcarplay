@@ -42,4 +42,6 @@
     <string name="sf_passat_retry">已选：失败后重建一次</string>
     <string name="sf_passat_disconnect">已选：连续失败后断开</string>
     <string name="sf_passat_norebuild">已选：点图标不重建主屏流</string>
+    <string name="lay_carplay_discovery">配对前发布 CarPlay 能力（实验）</string>
+    <string name="lay_carplay_discovery_desc">打开应用后保持蓝牙服务可用，供车机在配对时识别。额外服务仅为兼容探针，不能保证奔驰识别。关闭后，额外服务在下次连接时撤销。</string>
 </resources>

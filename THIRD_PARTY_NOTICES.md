@@ -61,3 +61,15 @@ diagnostic probe and is not an Android runtime library.
 These acknowledgements do not claim ownership of third-party work or relicense
 it. No CarWith, CarLife, OcarPlay, DiPlay or xcertplay APK, extracted private key,
 or external research-source tree belongs in the source distribution.
+
+## CarPlay discovery compatibility research
+
+The optional pre-pairing publication / Wireless iAP v2 probe in the
+`mercedes-carlife` branch was informed by
+[CarPToCarL](https://github.com/jjuugk/CarPToCarL), version 1.2.51,
+commit `3cbc8e85544bcffcc2aa45f1f3c5e1c70f9ca715`. Its MIT copyright
+notice is `Copyright (c) 2026 lizhihua`, already retained in this repository.
+The implementation uses mcarplay's grouped listener lifecycle; it does not
+bundle the reference APK or proprietary OEM components. This acknowledgement
+is not a claim of Mercedes compatibility. See
+[the comparison and test plan](docs/CARPTOCARL-MERCEDES-CARLIFE-REVIEW.zh-CN.md).

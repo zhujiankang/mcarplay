@@ -411,3 +411,23 @@ are reported independently; a saved file or missing event does not establish suc
 Files are always passed through `DiagnosticRedactor`, including on raw remote-debug builds, and saved separately to
 `Download/mcarplay/mcarplay-carwith-system-*.txt`. Review before sharing; arbitrary third-party log text may contain private data.
 The permissions, UI, collector and bridge command are all in `src/remote`; standard builds do not include them.
+
+## Experimental pre-pairing publication (`mercedes-carlife`)
+
+`BT-DISCOVERY` messages identify the idle publication phase, promotion after an
+actual iAP2 inbound connection, and the bounded Bluetooth reconnect window.
+Idle publication is not a formal CarPlay session and does not start CarWith.
+The service notification also makes that distinction and offers Stop.
+
+`BT-DIAG` adds the `WIRELESS_IAP2` service and the summary fields
+`wirelessIap2Registered`, `wirelessIap2Listening`, and
+`wirelessProbeConnections`. This is the optional `02030302…` placeholder, not a
+second working iAP2 transport. Contacts count as `CAPABILITY_ONLY`, never
+`ACCEPTED_IAP2`. Registration only establishes local publication; it does not
+establish that a vehicle read SDP, recognized an iPhone, or completed CarPlay.
+
+Promotion starts a new diagnostic run while retaining actual registered/listening
+flags for the still-open servers. The preceding discovery run ends separately;
+use both runs when following an inbound connection through promotion. Existing
+peer aliasing and redaction rules apply; no new location or pairing material is
+collected. See the [comparison and vehicle test plan](CARPTOCARL-MERCEDES-CARLIFE-REVIEW.zh-CN.md).

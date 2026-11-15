@@ -7,6 +7,37 @@ import org.junit.Test
 import java.io.IOException
 
 class BluetoothDiagnosticsTest {
+    @Test
+    fun discoveryPromotionPreservesLiveServicesWithoutInventingAConnection() {
+        diagnostics.begin("1234abcd")
+        val epoch = diagnostics.epoch()
+        for (service in BluetoothDiagnostics.Service.entries) {
+            diagnostics.registration(epoch, service, 5)
+            diagnostics.listener(epoch, service, true)
+        }
+        diagnostics.finish()
+        diagnostics.begin("abcd1234", preserveServerState = true)
+        val summary = diagnostics.summary()
+        assertTrue(summary, summary.contains("iap2Registered=true carPlayRegistered=true"))
+        assertTrue(summary, summary.contains("wirelessIap2Registered=true wirelessIap2Listening=true"))
+        assertTrue(summary, summary.contains("incomingAccepted=0"))
+        diagnostics.serverStopped(epoch)
+        assertEquals(summary, diagnostics.summary())
+        diagnostics.serverStopped(diagnostics.epoch())
+        assertTrue(diagnostics.summary().contains("wirelessIap2Registered=false wirelessIap2Listening=false"))
+    }
+
+    @Test
+    fun wirelessProbeContactIsNeverAnIap2Session() {
+        diagnostics.begin("1234abcd")
+        diagnostics.incoming(diagnostics.epoch(), BluetoothDiagnostics.Service.WIRELESS_IAP2, address, target)
+        val summary = diagnostics.summary()
+        assertTrue(summary, summary.contains("wirelessProbeConnections=1"))
+        assertTrue(summary, summary.contains("incomingAccepted=0 incomingRejected=0 capabilityConnections=1"))
+        assertTrue(lines.last().contains("decision=CAPABILITY_ONLY"))
+        assertFalse(lines.joinToString().contains(address))
+    }
+
     private val lines = mutableListOf<String>()
     private var now = 100L
     private val diagnostics = BluetoothDiagnostics(lines::add) { now }

@@ -93,6 +93,18 @@ class DisplayPanelFragment : SettingsPanelFragment() {
         autoConnectOn.setOnClickListener { applyAutoConnect(true) }
         autoConnectOff.setOnClickListener { applyAutoConnect(false) }
 
+        bindToggle(
+            view.findViewById(R.id.btnCarPlayDiscoveryOn),
+            view.findViewById(R.id.btnCarPlayDiscoveryOff),
+            com.mcarplay.app.bt.CarPlayDiscoveryPrefs
+                .enabled(ctx),
+        ) { enabled ->
+            com.mcarplay.app.bt.CarPlayDiscoveryPrefs
+                .setEnabled(ctx, enabled)
+            SessionController.applyDiscoveryPreference(ctx, enabled)
+            hostToast(getString(if (enabled) R.string.sf_carplay_discovery_on else R.string.sf_carplay_discovery_off))
+        }
+
         // HID 原始日志（键位校准）：默认关；打开后每帧 hidSendReport 写一行 HID-RAW
         val hidRawOn = view.findViewById<TextView>(R.id.btnHidRawOn)
         val hidRawOff = view.findViewById<TextView>(R.id.btnHidRawOff)

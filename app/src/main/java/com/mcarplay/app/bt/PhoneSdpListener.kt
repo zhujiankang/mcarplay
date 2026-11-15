@@ -2,7 +2,7 @@ package com.mcarplay.app.bt
 
 import java.io.Closeable
 
-/** 两项手机 SDP 公告共用一个生命周期；旧监听失败或迟到的恢复任务不能撤销、复活新一轮。 */
+/** 手机 SDP 公告组共用一个生命周期；旧监听失败或迟到的恢复任务不能撤销、复活新一轮。 */
 internal class PhoneSdpListener<T : Closeable>(
     private val open: () -> T,
     private val onOpened: (T) -> Unit,
@@ -36,7 +36,7 @@ internal class PhoneSdpListener<T : Closeable>(
         closeRecords()
     }
 
-    /** 任一监听结束都同时退役两项公告。仅当前实例可以发起一次恢复。 */
+    /** 任一监听结束都同时退役整组公告。仅当前实例可以发起一次恢复。 */
     @Synchronized
     fun failed(
         expected: T,

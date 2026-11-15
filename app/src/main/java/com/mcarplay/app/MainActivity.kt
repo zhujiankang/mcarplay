@@ -218,6 +218,7 @@ class MainActivity : AppCompatActivity() {
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             log("BLUETOOTH_CONNECT 授权: $granted")
+            if (granted) maybePrepareBluetoothDiscovery()
             if (pendingStartAfterBtPermission.compareAndSet(true, false)) {
                 ConnectionDiagnostics.permissionResult(granted, DiagnosticCode.BT_PERMISSION)
                 if (granted) resumeConnectionChecks() else pendingDetectionTarget = null
@@ -1090,7 +1091,10 @@ class MainActivity : AppCompatActivity() {
                     },
                     onDismiss = {
                         activeDisclaimer = null
-                        if (DisclaimerPrefs.hasAcceptedCurrent(this)) maybeShowWhatsNew()
+                        if (DisclaimerPrefs.hasAcceptedCurrent(this)) {
+                            maybeShowWhatsNew()
+                            maybePrepareBluetoothDiscovery()
+                        }
                     },
                 )
     }
@@ -2167,8 +2171,27 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    private fun maybePrepareBluetoothDiscovery() {
+        if (!DisclaimerPrefs.hasAcceptedCurrent(this) ||
+            !com.mcarplay.app.bt.CarPlayDiscoveryPrefs
+                .enabled(this) ||
+            SessionController.isSessionRunning() ||
+            SessionController.isDiscoveryPrepared() ||
+            com.mcarplay.app.carlife.CarLifeDiagnostics
+                .isRunning() ||
+            androidx.core.content.ContextCompat
+                .checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        runCatching { CarPlayService.prepareDiscovery(this) }
+            .onFailure { log("BT-DISCOVERY: 提前公告服务启动失败 - ${it.javaClass.simpleName}") }
+    }
+
     override fun onResume() {
         super.onResume()
+        maybePrepareBluetoothDiscovery()
         SessionController.onMainUiVisibilityChanged(true)
         mainHandler.post(heroTick)
         // 旋转/重建后尚未接受：用原截止时刻续弹（不重新等 10 秒）

@@ -1,5 +1,7 @@
 # mcarplay
 
+> Experimental `mercedes-carlife` branch: same-phone **CarWith → CarLife → wireless CarPlay**. Adds pre-pairing publication, an optional Wireless iAP v2 probe, bond-state gating and a bounded reconnect window. Mercedes GLC260 compatibility is unverified. See the [source comparison, limitations and vehicle test plan (Chinese)](docs/CARPTOCARL-MERCEDES-CARLIFE-REVIEW.zh-CN.md).
+
 <img src="docs/branding/mcarplay-icon.png" width="96" height="96" alt="mcarplay app icon">
 
 [![Android CI](https://github.com/wangxso/mcarplay/actions/workflows/android-ci.yml/badge.svg)](https://github.com/wangxso/mcarplay/actions/workflows/android-ci.yml)

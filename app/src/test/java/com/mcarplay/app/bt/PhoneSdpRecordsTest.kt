@@ -11,6 +11,38 @@ import java.io.IOException
 import java.util.UUID
 
 class PhoneSdpRecordsTest {
+    @Test
+    fun optionalProbeAddsOneDistinctRecordAndClosesWithTransport() {
+        val advertised = mutableListOf<UUID>()
+        val records =
+            PhoneSdpRecords.open(includeWirelessIap2 = true) { _, uuid ->
+                advertised += uuid
+                Record()
+            }
+        assertEquals(3, advertised.size)
+        assertEquals(3, advertised.toSet().size)
+        assertEquals(PhoneSdpRecords.WIRELESS_IAP2_UUID, advertised.last())
+        records.close()
+        assertTrue(records.wirelessIap2!!.closed)
+        assertTrue(records.carPlay.closed)
+        assertTrue(records.iap2.closed)
+    }
+
+    @Test
+    fun failedThirdRegistrationRollsBackBothEarlierServices() {
+        val opened = mutableListOf<Record>()
+        try {
+            PhoneSdpRecords.open(includeWirelessIap2 = true) { _, uuid ->
+                if (uuid == PhoneSdpRecords.WIRELESS_IAP2_UUID) throw IOException("no SDP slot")
+                Record().also { opened += it }
+            }
+            fail("third registration must fail")
+        } catch (_: IOException) {
+            assertEquals(2, opened.size)
+            assertTrue(opened.all { it.closed })
+        }
+    }
+
     private class Record(
         private val failClose: Boolean = false,
     ) : Closeable {

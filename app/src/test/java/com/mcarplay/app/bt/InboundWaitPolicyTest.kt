@@ -8,6 +8,40 @@ import java.io.IOException
 import java.util.UUID
 
 class InboundWaitPolicyTest {
+    @Test
+    fun rebondingClearsWaitEvenWhenNoSocketIsAttempted() {
+        val policy = InboundWaitPolicy { 100L }
+        val services = listOf(InboundWaitPolicy.INBOUND_ONLY_SIGNATURE)
+        assertTrue(policy.failed(ADDRESS, services, "READ_FAILED", 50))
+        policy.bondChanged(ADDRESS, bonded = true)
+        assertTrue(policy.isWaiting(ADDRESS))
+        policy.bondChanged(ADDRESS, bonded = false)
+        assertFalse(policy.isWaiting(ADDRESS))
+        assertFalse(policy.skipOutbound(ADDRESS))
+    }
+
+    @Test
+    fun mercedesRebondingFailureIsNotInboundOnlyEvidence() {
+        val policy = InboundWaitPolicy { 100L }
+        val services = listOf(InboundWaitPolicy.INBOUND_ONLY_SIGNATURE)
+        assertFalse(policy.failed(ADDRESS, services, "READ_FAILED", 158, bonded = false))
+        assertFalse(policy.isWaiting(ADDRESS))
+        assertFalse(policy.skipOutbound(ADDRESS))
+    }
+
+    @Test
+    fun lostBondDiscardsEarlierFastFailureAndWaitingState() {
+        val policy = InboundWaitPolicy { 100L }
+        val services = emptyList<UUID>()
+        repeat(2) { assertFalse(policy.failed(ADDRESS, services, "READ_FAILED", 50)) }
+        assertFalse(policy.failed(ADDRESS, services, "READ_FAILED", 50, bonded = false))
+        assertFalse(policy.failed(ADDRESS, services, "READ_FAILED", 50))
+        val signature = listOf(InboundWaitPolicy.INBOUND_ONLY_SIGNATURE)
+        assertTrue(policy.failed(ADDRESS, signature, "READ_FAILED", 50))
+        assertFalse(policy.failed(ADDRESS, signature, "READ_FAILED", 50, bonded = false))
+        assertFalse(policy.isWaiting(ADDRESS))
+    }
+
     private var now = 10_000L
     private val policy = InboundWaitPolicy { now }
 

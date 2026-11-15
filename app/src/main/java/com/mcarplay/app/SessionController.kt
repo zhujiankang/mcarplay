@@ -14,13 +14,17 @@ import com.mcarplay.app.audio.AudioSender
 import com.mcarplay.app.audio.AudioTuning
 import com.mcarplay.app.audio.CarLifeAudioBridge
 import com.mcarplay.app.bt.AutoConnectPrefs
+import com.mcarplay.app.bt.BluetoothBringupGrace
 import com.mcarplay.app.bt.BluetoothDiagnostics
+import com.mcarplay.app.bt.BluetoothStateMonitor
 import com.mcarplay.app.bt.BtProfiles
 import com.mcarplay.app.bt.BtSessionGate
+import com.mcarplay.app.bt.CarPlayDiscoveryPrefs
 import com.mcarplay.app.bt.Iap2BluetoothClient
 import com.mcarplay.app.bt.Iap2BluetoothServer
 import com.mcarplay.app.bt.TargetDevicePrefs
 import com.mcarplay.app.carlife.CarLifeAudioEvent
+import com.mcarplay.app.carlife.CarLifeDiagnostics
 import com.mcarplay.app.carlife.CarLifeJoinGate
 import com.mcarplay.app.carlife.CarLifeLaunchStrategy
 import com.mcarplay.app.carlife.CarLifeLauncher
@@ -376,6 +380,105 @@ object SessionController {
 
     private val bluetoothDiagnostics = BluetoothDiagnostics(ConnectionDiagnostics::runtimeLog)
 
+    @Volatile
+    private var discoveryOnly = false
+
+    @Volatile
+    private var discoverySuppressed = false
+    private var discoveryMonitor: BluetoothStateMonitor? = null
+    private val bringupGrace = BluetoothBringupGrace(SystemClock::elapsedRealtime)
+    private val discoveryHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    fun isDiscoveryPrepared(): Boolean = discoveryOnly
+
+    /** 前台服务持有公告；不主动连接、不启动 CarWith，也不把 SDP 注册当成正式连接。 */
+    @Synchronized
+    fun prepareBluetoothDiscovery(context: Context): Boolean {
+        if (discoverySuppressed ||
+            !CarPlayDiscoveryPrefs.enabled(context) ||
+            disconnectCompletion != null ||
+            CarLifeDiagnostics.isRunning()
+        ) {
+            return false
+        }
+        if (isSessionRunning() || discoveryOnly) return true
+        ensure(context)
+        if (bluetoothServer?.hasPermission() != true) return false
+        discoveryOnly = true
+        connectCancelled = false
+        bluetoothDiagnostics.begin("discovery")
+        val epoch = bluetoothDiagnostics.epoch()
+        discoveryMonitor =
+            BluetoothStateMonitor(
+                context.applicationContext,
+                bluetoothDiagnostics,
+                epoch,
+                targetProvider = { TargetDevicePrefs.get(context) },
+                onAdapterStateChanged = { state -> bluetoothServer?.onAdapterStateChanged(state) },
+                isCurrent = { discoveryOnly && bluetoothDiagnostics.epoch() == epoch },
+            ).also { it.start() }
+        bluetoothServer?.start()
+        appendLog("BT-DISCOVERY: 提前公告已请求；仅等待发现/回连，尚未建立 CarPlay，不启动 CarWith")
+        return true
+    }
+
+    @Synchronized
+    fun stopBluetoothDiscovery() {
+        if (!discoveryOnly) return
+        discoveryOnly = false
+        discoveryMonitor?.stop()
+        discoveryMonitor = null
+        bluetoothServer?.stop()
+        bluetoothDiagnostics.finish()
+    }
+
+    fun applyDiscoveryPreference(
+        context: Context,
+        enabled: Boolean,
+    ) {
+        if (enabled) {
+            discoverySuppressed = false
+            CarPlayService.prepareDiscovery(context)
+        } else {
+            stopBluetoothDiscovery()
+            if (!isSessionRunning() && !CarLifeDiagnostics.isRunning()) CarPlayService.stop(context)
+        }
+    }
+
+    /** ACL 掉线可能发生在重新配对中；给真实回连保留有界窗口，用户停止仍立即生效。 */
+    @Synchronized
+    fun deferBluetoothDisconnect(context: Context): Boolean {
+        if (!CarPlayDiscoveryPrefs.enabled(context) || disconnectCompletion != null || discoverySuppressed) return false
+        if (discoveryOnly) return true
+        if (!isSessionRunning() || currentClient != null) return false
+        val token = bringupGrace.begin() ?: return true
+        appendLog("BT-DISCOVERY: 蓝牙暂断，保留公告和回连窗口 60 秒；手动停止可立即结束")
+        discoveryHandler.postDelayed({
+            synchronized(this) {
+                if (bringupGrace.expire(token) &&
+                    isSessionRunning() &&
+                    bluetoothDisconnectAction() != ReceiverCompatibility.BluetoothLossAction.KEEP_NETWORK_SESSION
+                ) {
+                    appendLog("BT-DISCOVERY: 回连窗口结束，停止本轮连接")
+                    disconnect(context.applicationContext, DiagnosticCode.BT_LINK_CLOSED)
+                }
+            }
+        }, BluetoothBringupGrace.WINDOW_MILLIS)
+        return true
+    }
+
+    @Synchronized
+    private fun incomingBluetoothSession(context: Context): Boolean {
+        if (disconnectCompletion != null || discoverySuppressed) return false
+        bringupGrace.cancel()
+        if (discoveryOnly) {
+            audioEnabledForSession = CarLifeLauncher.isAvailable(context)
+            appendLog("BT-DISCOVERY: 收到真实 iAP2 连入，提升为正式连接（协议仍需继续协商）")
+            startConnection(context)
+        }
+        return !connectCancelled && isSessionRunning()
+    }
+
     fun bluetoothDiagnosticSummary(): String = bluetoothDiagnostics.summary()
 
     /** DCL 双检锁的可发布字段（无 volatile 的双检锁是坏发布——虽然当前仅主线程调用，别留隐患）。 */
@@ -673,6 +776,7 @@ object SessionController {
                 Iap2BluetoothServer(
                     context,
                     log = { line -> appendLog(line) },
+                    onIncomingSession = { incomingBluetoothSession(context) },
                     onEndpoint = { endpoint -> onCarPlayEndpoint(endpoint, "车机回连") },
                     onWifiCredentials = wifiCredentialHook,
                     onEndpointUpdate = { endpoint -> onLateEndpoint(endpoint, "车机回连") },
@@ -760,7 +864,7 @@ object SessionController {
     /** 会话是否活跃（推出流进程或 BT 任一在跑）。 */
     fun isSessionRunning(): Boolean =
         videoSender?.isRunning == true ||
-            bluetoothServer?.isRunning == true ||
+            (bluetoothServer?.isRunning == true && !discoveryOnly) ||
             bluetoothClient?.isRunning == true
 
     /** ACL 广播与 RFCOMM 关闭共用策略，避免两条路径对网络交接做出相反判断。 */
@@ -889,9 +993,15 @@ object SessionController {
             return
         }
         if (!automatic) AutoConnectPrefs.clearManualStop(context)
+        bringupGrace.cancel()
+        discoverySuppressed = false
         val alreadyRunning = isSessionRunning()
+        val wasPrepared = discoveryOnly
+        discoveryOnly = false
+        discoveryMonitor?.stop()
+        discoveryMonitor = null
         val diagnosticAttempt =
-            if (isSessionRunning()) {
+            if (alreadyRunning) {
                 ConnectionDiagnostics.timeline.snapshot()?.id ?: ConnectionDiagnostics.begin("user_start")
             } else {
                 ConnectionDiagnostics.begin("user_start")
@@ -900,7 +1010,8 @@ object SessionController {
             ConnectionDiagnostics.timeline.stage(diagnosticAttempt, ConnectionStage.BLUETOOTH)
         }
         if (!alreadyRunning) {
-            bluetoothDiagnostics.begin(diagnosticAttempt)
+            if (wasPrepared) bluetoothDiagnostics.finish()
+            bluetoothDiagnostics.begin(diagnosticAttempt, preserveServerState = bluetoothServer?.isRunning == true)
             ReceiverDetectionRuntime.connectionStarted(diagnosticAttempt)
         }
         connectCancelled = false
@@ -975,6 +1086,11 @@ object SessionController {
         preserveDetection: Boolean = false,
     ) {
         connectCancelled = true
+        bringupGrace.cancel()
+        discoverySuppressed = true
+        discoveryOnly = false
+        discoveryMonitor?.stop()
+        discoveryMonitor = null
         if (reason == DiagnosticCode.USER_STOP) {
             userStopGeneration++
             AutoConnectPrefs.recordManualStop(context)

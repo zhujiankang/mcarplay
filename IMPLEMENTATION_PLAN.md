@@ -6,6 +6,8 @@
 
 ## 当前基线与结论
 
+- **奔驰 CarLife 实验分支 `mercedes-carlife`（0.1.7-debug，未发布）：** 按用户更正的目标从 main `ab0cb938` 开始，保留原 Carlink 分支。对照 CarPToCarL 1.2.51，补提前公告、可选 Wireless iAP v2 占位探针、配对状态门控和 60 秒回连窗口。基础 CarPlay UUID 原已存在，未重复注册；未将占位服务当作真实 iAP2 通道。新增 10 项回归测试；完整 standard 909 项、remote bridge 24 项均 0 失败/错误/跳过，Spotless、standard lint 和 debug APK 构建通过。没有新增实车成功证据。详见 `docs/CARPTOCARL-MERCEDES-CARLIFE-REVIEW.zh-CN.md`。
+
 - **11 月 6 日 v0.1.6 正式版（本地构建，未推 tag）：** 汇总 PR #42 屏幕归属门控、#44 主音频仲裁、#43 手机端 SDP 生命周期与 #41 CarWith 入口诊断；
   新增「上车自动播放音乐」开关（默认开，关闭后连接窗口内拦截车机自动播放并暂停自行开始的音乐）。
   用户反馈小米 17 Pro Max + DiPlay 组合无问题（未记录构建版本、组件版本与具体验证项）。

@@ -18,6 +18,7 @@ internal class BluetoothStateMonitor(
     private val epoch: Long,
     private val targetProvider: () -> TargetDevicePrefs.Target?,
     private val onAdapterStateChanged: (Int) -> Unit = {},
+    private val onBondStateChanged: (String, Int) -> Unit = { _, _ -> },
     private val isCurrent: () -> Boolean,
 ) {
     private var registered = false
@@ -48,7 +49,7 @@ internal class BluetoothStateMonitor(
                         else -> BluetoothDiagnostics.PeerMatch.OTHER
                     }
                 when (intent.action) {
-                    BluetoothDevice.ACTION_BOND_STATE_CHANGED ->
+                    BluetoothDevice.ACTION_BOND_STATE_CHANGED -> {
                         diagnostics.bondChanged(
                             epoch,
                             address,
@@ -56,6 +57,8 @@ internal class BluetoothStateMonitor(
                             intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, -1),
                             intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1),
                         )
+                        onBondStateChanged(address, intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1))
+                    }
                     BluetoothDevice.ACTION_ACL_CONNECTED -> diagnostics.acl(epoch, address, match, connected = true)
                     BluetoothDevice.ACTION_ACL_DISCONNECTED -> diagnostics.acl(epoch, address, match, connected = false)
                 }

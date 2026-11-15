@@ -46,6 +46,15 @@ internal class InboundWaitPolicy(
         peers.remove(address)
     }
 
+    /** 无新出站尝试时也要撤销上一次配对积累的结论。 */
+    @Synchronized
+    fun bondChanged(
+        address: String,
+        bonded: Boolean,
+    ) {
+        if (!bonded) peers.remove(address)
+    }
+
     /**
      * 记录一次出站失败；返回 true 表示此次**刚转入**等待（调用方据此提示用户，只提示一次）。
      * @param reason [BluetoothFailure.describe] 的固定原因（如 `READ_FAILED`）
@@ -56,7 +65,13 @@ internal class InboundWaitPolicy(
         services: List<UUID>,
         reason: String?,
         elapsedMs: Long,
+        bonded: Boolean = true,
     ): Boolean {
+        // 配对变化期间的 READ_FAILED 不能作为“车机只接受回连”的证据。
+        if (!bonded) {
+            peers.remove(address)
+            return false
+        }
         val peer = peers.getOrPut(address) { Peer() }
         if (peer.waitingSince != null) return false
         if (Iap2BluetoothClient.ACCESSORY_IAP2_UUID in services || !isFastReadFailure(reason, elapsedMs)) {

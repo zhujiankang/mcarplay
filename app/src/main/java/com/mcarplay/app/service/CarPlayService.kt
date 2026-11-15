@@ -29,6 +29,7 @@ import com.mcarplay.app.util.DebugFileLog
  */
 class CarPlayService : Service() {
     private var wakeLock: android.os.PowerManager.WakeLock? = null
+    private var discoveryNotification = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -67,6 +68,11 @@ class CarPlayService : Service() {
                 }
                 return START_STICKY
             }
+            if ((SessionController.isDiscoveryPrepared() || SessionController.isSessionRunning()) &&
+                SessionController.deferBluetoothDisconnect(applicationContext)
+            ) {
+                return if (SessionController.isDiscoveryPrepared()) START_NOT_STICKY else START_STICKY
+            }
             fileLog("SVC: 收到「下车自动结束」——收起会话")
             if (SessionController.isSessionRunning()) {
                 SessionController.disconnect(applicationContext, DiagnosticCode.BT_LINK_CLOSED)
@@ -75,6 +81,12 @@ class CarPlayService : Service() {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_STOP_SESSION) {
+            SessionController.disconnect(applicationContext)
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
             return START_NOT_STICKY
         }
         if (intent?.action == ACTION_STOP_DIAGNOSTIC) {
@@ -93,6 +105,8 @@ class CarPlayService : Service() {
             }
             return START_NOT_STICKY
         }
+        val preparingDiscovery = intent?.action == ACTION_PREPARE_DISCOVERY && !SessionController.isSessionRunning()
+        discoveryNotification = preparingDiscovery
         // 必须显式指定类型为 connectedDevice：
         // 2 参 startForeground 会拾取 manifest 声明的全部类型（含 mediaProjection），
         // 而 Android 14 启动 mediaProjection 类型要求 AppOps PROJECT_MEDIA（用户当次授权才有效）——
@@ -112,6 +126,22 @@ class CarPlayService : Service() {
             buildNotification(),
             fgsTypes,
         )
+        if (preparingDiscovery) {
+            // 已启动 CarWith 自检时不抢占它的生命周期；只在用户接受声明后提供提前公告。
+            if (CarLifeDiagnostics.isRunning()) return START_NOT_STICKY
+            if (!com.mcarplay.app.legal.DisclaimerPrefs
+                    .hasAcceptedCurrent(this)
+            ) {
+                stopSelfResult(startId)
+                return START_NOT_STICKY
+            }
+            Bg.run("bt-prepare-discovery") {
+                if (!SessionController.prepareBluetoothDiscovery(applicationContext) && !SessionController.isSessionRunning()) {
+                    stopSelfResult(startId)
+                }
+            }
+            return START_NOT_STICKY
+        }
         acquireLocks()
         // 授权结果在（用户刚确认投屏）时：升级前台类型再创建投影（try/catch 兜底不崩）
         if (pendingProjectionResult != null) {
@@ -226,6 +256,7 @@ class CarPlayService : Service() {
         // follow-up command. Release its sockets and lease before the process
         // can be recreated and treated as a stale formal session.
         CarLifeDiagnostics.stop()
+        SessionController.stopBluetoothDiscovery()
         releaseLocks()
         // Android 14+：MediaProjection 与前台的 mediaProjection 类型绑定——
         // 保活服务停止（如用户点「断开连接」）时系统会连带停止投影。
@@ -249,6 +280,8 @@ class CarPlayService : Service() {
 
         /** 上车自动连接：车机蓝牙 ACL 连上时由 CarBluetoothReceiver 投递。 */
         const val ACTION_AUTO_START_SESSION = "com.mcarplay.app.action.AUTO_START"
+        const val ACTION_PREPARE_DISCOVERY = "com.mcarplay.app.action.PREPARE_DISCOVERY"
+        const val ACTION_STOP_SESSION = "com.mcarplay.app.action.STOP_SESSION"
 
         /** 目标蓝牙 ACL 断开时检查是否自动收摊；Wi-Fi 视频已启动时保留会话。 */
         const val ACTION_AUTO_STOP_SESSION = "com.mcarplay.app.action.AUTO_STOP"
@@ -265,6 +298,10 @@ class CarPlayService : Service() {
         /** 授权结果暂存：由服务在前台类型升级后调用 getMediaProjection（Android 14+ 顺序要求）。 */
         @Volatile
         var pendingProjectionResult: Pair<Int, Intent>? = null
+
+        fun prepareDiscovery(context: Context) {
+            context.startForegroundService(Intent(context, CarPlayService::class.java).setAction(ACTION_PREPARE_DISCOVERY))
+        }
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, CarPlayService::class.java))
@@ -312,11 +349,19 @@ class CarPlayService : Service() {
                 },
                 android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
             )
+        val stopIntent =
+            android.app.PendingIntent.getService(
+                this,
+                1,
+                Intent(this, CarPlayService::class.java).setAction(ACTION_STOP_SESSION),
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
+            )
         return NotificationCompat
             .Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-            .setContentTitle(text.getString(R.string.notif_running_title))
-            .setContentText(text.getString(R.string.notif_running_text))
+            .setContentTitle(text.getString(if (discoveryNotification) R.string.notif_discovery_title else R.string.notif_running_title))
+            .setContentText(text.getString(if (discoveryNotification) R.string.notif_discovery_text else R.string.notif_running_text))
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, text.getString(R.string.notif_stop), stopIntent)
             .setContentIntent(contentIntent)
             .setAutoCancel(false)
             .setOngoing(true)

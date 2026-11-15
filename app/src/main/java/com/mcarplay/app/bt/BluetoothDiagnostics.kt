@@ -15,6 +15,7 @@ class BluetoothDiagnostics(
     ) {
         IAP2("00000000-deca-fade-deca-deafdecacafe"),
         CARPLAY("2d8d2466-e14d-451c-88bc-7301abea291a"),
+        WIRELESS_IAP2("02030302-1d19-415f-86f2-22a2106a0a77"),
     }
 
     enum class SdpOutcome { COMPLETE, TIMEOUT, NOT_STARTED, ERROR, CANCELLED }
@@ -40,6 +41,9 @@ class BluetoothDiagnostics(
         var carPlayRegistered = false
         var iap2Listening = false
         var carPlayListening = false
+        var wirelessIap2Registered = false
+        var wirelessIap2Listening = false
+        var wirelessProbeConnections = 0
         var outboundAttempts = 0
         var outboundSuccess = 0
         var outboundFailures = 0
@@ -67,8 +71,20 @@ class BluetoothDiagnostics(
     private var state = State()
 
     @Synchronized
-    fun begin(attempt: String) {
+    fun begin(
+        attempt: String,
+        preserveServerState: Boolean = false,
+    ) {
+        val previous = state
         state = State(state.epoch + 1, attempt.takeIf { it.matches(Regex("[a-f0-9]{8}")) } ?: "unknown", nowMs(), true)
+        if (preserveServerState) {
+            state.iap2Registered = previous.iap2Registered
+            state.carPlayRegistered = previous.carPlayRegistered
+            state.iap2Listening = previous.iap2Listening
+            state.carPlayListening = previous.carPlayListening
+            state.wirelessIap2Registered = previous.wirelessIap2Registered
+            state.wirelessIap2Listening = previous.wirelessIap2Listening
+        }
         emit("BEGIN", "attempt=${state.attempt}")
     }
 
@@ -90,6 +106,8 @@ class BluetoothDiagnostics(
             "schema=1 run=$epoch attempt=$attempt active=$active elapsedMs=${duration(startedAtMs, endedAtMs ?: nowMs())} " +
                 "client=$client iap2Registered=$iap2Registered carPlayRegistered=$carPlayRegistered " +
                 "iap2Listening=$iap2Listening carPlayListening=$carPlayListening " +
+                "wirelessIap2Registered=$wirelessIap2Registered wirelessIap2Listening=$wirelessIap2Listening " +
+                "wirelessProbeConnections=$wirelessProbeConnections " +
                 "outboundAttempts=$outboundAttempts outboundSuccess=$outboundSuccess outboundFailures=$outboundFailures " +
                 "outboundCancelled=$outboundCancelled inFlight=${inFlight?.number ?: 0} " +
                 "inFlightMs=${inFlight?.let { duration(it.startedAtMs, endedAtMs ?: nowMs()) } ?: 0} " +
@@ -125,7 +143,11 @@ class BluetoothDiagnostics(
         elapsedMs: Long,
         error: Throwable? = null,
     ) = update(epoch) {
-        if (service == Service.IAP2) iap2Registered = error == null else carPlayRegistered = error == null
+        when (service) {
+            Service.IAP2 -> iap2Registered = error == null
+            Service.CARPLAY -> carPlayRegistered = error == null
+            Service.WIRELESS_IAP2 -> wirelessIap2Registered = error == null
+        }
         emit(
             "SDP_REGISTER",
             "service=$service uuid=${service.uuid} elapsedMs=${elapsedMs.coerceAtLeast(0)} " +
@@ -141,7 +163,11 @@ class BluetoothDiagnostics(
         listening: Boolean,
         error: Throwable? = null,
     ) = update(epoch) {
-        if (service == Service.IAP2) iap2Listening = listening else carPlayListening = listening
+        when (service) {
+            Service.IAP2 -> iap2Listening = listening
+            Service.CARPLAY -> carPlayListening = listening
+            Service.WIRELESS_IAP2 -> wirelessIap2Listening = listening
+        }
         emit("LISTENER", "service=$service listening=$listening" + (error?.let { " ${BluetoothFailure.describe(it)}" } ?: ""))
         error?.let { DiagnosticExportPolicy.exception("BT_LISTENER_$service", it) }
     }
@@ -153,6 +179,8 @@ class BluetoothDiagnostics(
             carPlayRegistered = false
             iap2Listening = false
             carPlayListening = false
+            wirelessIap2Registered = false
+            wirelessIap2Listening = false
             emit("SERVER_STOPPED", "recordsReleased=true")
         }
 
@@ -246,8 +274,9 @@ class BluetoothDiagnostics(
         address: String?,
         match: PeerMatch,
     ) = update(epoch) {
-        if (service == Service.CARPLAY) {
+        if (service != Service.IAP2) {
             capabilityConnections++
+            if (service == Service.WIRELESS_IAP2) wirelessProbeConnections++
         } else if (match == PeerMatch.OTHER) {
             incomingRejected++
         } else {
@@ -255,7 +284,7 @@ class BluetoothDiagnostics(
         }
         val decision =
             when {
-                service == Service.CARPLAY -> "CAPABILITY_ONLY"
+                service != Service.IAP2 -> "CAPABILITY_ONLY"
                 match == PeerMatch.OTHER -> "REJECTED_TARGET"
                 else -> "ACCEPTED_IAP2"
             }

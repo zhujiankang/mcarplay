@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — mercedes-carlife (0.1.7)
+
+English: Publish optional CarPlay discovery services before pairing, retain a bounded reconnect window during Bluetooth bring-up, and pause outbound RFCOMM while bonding. Add diagnostics distinguishing the Wireless iAP v2 placeholder probe from a real iAP2 session. Mercedes vehicle compatibility remains unverified; this is an unsigned-for-release debug experiment.
+
+简体中文：新增配对前 CarPlay 公告实验模式、建链初期有界回连窗口及重新配对门控。新增 Wireless iAP v2 占位探针的独立诊断，不将探针接触当作协议会话。尚未验证奔驰实车兼容；本轮只构建 debug 包，不作签名发布。
+
+
 Release notes are listed newest first. English is followed by Simplified Chinese.
 Test releases are experimental and do not establish real-vehicle compatibility.
 

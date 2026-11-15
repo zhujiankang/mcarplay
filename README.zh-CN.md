@@ -1,5 +1,7 @@
 # mcarplay
 
+> `mercedes-carlife` 实验分支：目标为同机 **CarWith → CarLife → 无线 CarPlay**。新增配对前公告、可选 Wireless iAP v2 探针、配对状态门控与有界回连窗口；尚未验证奔驰 GLC260 成功。代码对比、限制和实车步骤见 [分析报告](docs/CARPTOCARL-MERCEDES-CARLIFE-REVIEW.zh-CN.md)。
+
 <img src="docs/branding/mcarplay-icon.png" width="96" height="96" alt="mcarplay 应用图标">
 
 [![Android CI](https://github.com/wangxso/mcarplay/actions/workflows/android-ci.yml/badge.svg)](https://github.com/wangxso/mcarplay/actions/workflows/android-ci.yml)
