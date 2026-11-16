@@ -12,6 +12,7 @@ import androidx.core.app.NotificationCompat
 import com.mcarplay.app.MainActivity
 import com.mcarplay.app.R
 import com.mcarplay.app.SessionController
+import com.mcarplay.app.audio.ConnectionAudioPrefs
 import com.mcarplay.app.audio.SilentProjectionActivity
 import com.mcarplay.app.bt.AutoConnectPrefs
 import com.mcarplay.app.carlife.CarLifeDiagnostics
@@ -162,9 +163,13 @@ class CarPlayService : Service() {
                 // 自动连接默认带声音：CarWith 原生音频无需投屏授权；否则先静默领取投屏令牌，
                 // 失败退回只推视频。（旧写法 `!isAvailable && …` 在 CarWith 可用时恒为 false，
                 // 会覆盖用户刚选的「开启声音」——2026-10-27 WinPlay 实测第二次会话无声。）
-                SessionController.audioEnabledForSession =
-                    CarLifeLauncher.isAvailable(app) ||
-                    acquireProjectionSilently()
+                // 已在运行时不改写本轮选择；首次自动启动读取用户最后选择。
+                if (!SessionController.isSessionRunning()) {
+                    SessionController.audioEnabledForSession =
+                        ConnectionAudioPrefs
+                            .enabled(app) &&
+                        (CarLifeLauncher.isAvailable(app) || acquireProjectionSilently())
+                }
                 SessionController.startConnection(app, automatic = true)
             }
         } else if (intent?.action == ACTION_START_DIAGNOSTIC) {

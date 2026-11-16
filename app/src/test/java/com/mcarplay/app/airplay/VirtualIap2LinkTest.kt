@@ -141,6 +141,50 @@ class VirtualIap2LinkTest {
     }
 
     @Test
+    fun singleDetectRepliesWithoutPrematureSynOrPeriodicRetransmission() {
+        val h = Harness()
+        h.link.armMib3()
+        h.controlSent.clear()
+        h.link.onCarBytes(Iap2LinkEngine.MARKER)
+        assertEquals(listOf(Iap2LinkEngine.MARKER.toList()), h.controlSent.map { it.toList() })
+        h.clock += 5_000
+        h.link.onCarBytes(ByteArray(0))
+        assertEquals(1, h.controlSent.size)
+        assertTrue(h.eventSent.isEmpty())
+    }
+
+    @Test
+    fun fragmentedAndCoalescedDetectHaveIdenticalProtocolOutput() {
+        val bytes = Iap2LinkEngine.MARKER + Iap2LinkEngine.MARKER
+
+        fun run(chunks: List<ByteArray>): List<Byte> {
+            val h = Harness()
+            h.link.armMib3()
+            h.controlSent.clear()
+            chunks.forEach(h.link::onCarBytes)
+            return h.controlSent.flatMap { it.toList() }
+        }
+        val expected = run(listOf(Iap2LinkEngine.MARKER, Iap2LinkEngine.MARKER))
+        assertTrue(expected.size > Iap2LinkEngine.MARKER.size)
+        assertEquals(expected, run(listOf(bytes)))
+        for (split in 1 until bytes.size) {
+            assertEquals("split=$split", expected, run(listOf(bytes.copyOfRange(0, split), bytes.copyOfRange(split, bytes.size))))
+        }
+        assertEquals(expected, run(bytes.map { byteArrayOf(it) }))
+    }
+
+    @Test
+    fun malformedDetectDoesNotTriggerSynOrCountAsPeerProgress() {
+        val h = Harness()
+        h.link.armMib3()
+        h.controlSent.clear()
+        h.link.onCarBytes(Iap2LinkEngine.MARKER.copyOf().also { it[5] = 0 })
+        assertTrue(h.controlSent.isEmpty())
+        h.link.onCarBytes(Iap2LinkEngine.MARKER)
+        assertEquals(listOf(Iap2LinkEngine.MARKER.toList()), h.controlSent.map { it.toList() })
+    }
+
+    @Test
     fun mib3ArmSendsExactlyOneDetectOnControlChannel() {
         val h = Harness()
         h.link.setGeneration(ReceiverProfile.LinkGeneration.CLASSIC_MIB3)
@@ -176,10 +220,10 @@ class VirtualIap2LinkTest {
         val detect = h.controlSent.size
         // 第 1 个：还不判定（MIB3 会再发一次探测重发）
         h.link.onCarBytes(Iap2LinkEngine.MARKER)
-        assertEquals("首个 marker 不应额外发字节", detect, h.controlSent.size)
+        assertEquals("首个 DETECT 应单次回应", detect + 1, h.controlSent.size)
         // 第 2 个：升级为 marker + 同步包
         h.link.onCarBytes(Iap2LinkEngine.MARKER)
-        val sent = h.controlSent.drop(detect)
+        val sent = h.controlSent.drop(detect + 1)
         assertTrue("重复 marker 后必须补发协商字节", sent.isNotEmpty())
         val payload = sent.fold(ByteArray(0)) { acc, bytes -> acc + bytes }
         assertTrue(
@@ -213,7 +257,7 @@ class VirtualIap2LinkTest {
             val detect = h.controlSent.size
             // 第 1 个：还不判定（车机会再发探测重发）
             h.link.onCarBytes(Iap2LinkEngine.MARKER)
-            assertEquals("$generation 首个 marker 不应额外发字节", detect, h.controlSent.size)
+            assertEquals("$generation 首个 DETECT 应单次回应", detect + 1, h.controlSent.size)
             // 第 2 个：升级为 marker + 会话表
             h.link.onCarBytes(Iap2LinkEngine.MARKER)
             assertTrue(

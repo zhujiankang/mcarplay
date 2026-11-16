@@ -11,6 +11,7 @@ import com.mcarplay.app.SessionController
 import com.mcarplay.app.audio.AudioDuckingPrefs
 import com.mcarplay.app.bt.AutoConnectPrefs
 import com.mcarplay.app.compat.CompatibilityPrefs
+import com.mcarplay.app.compat.MercedesStartup
 import com.mcarplay.app.compat.PassatReturnStrategy
 
 /**
@@ -104,6 +105,29 @@ class DisplayPanelFragment : SettingsPanelFragment() {
             SessionController.applyDiscoveryPreference(ctx, enabled)
             hostToast(getString(if (enabled) R.string.sf_carplay_discovery_on else R.string.sf_carplay_discovery_off))
         }
+
+        val startupMode = view.findViewById<android.widget.Spinner>(R.id.mercedesStartupMode)
+        val modes = MercedesStartup.Mode.entries
+        startupMode.setSelection(
+            modes.indexOf(
+                MercedesStartup
+                    .mode(ctx),
+            ),
+        )
+        startupMode.onItemSelectedListener =
+            object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(
+                    parent: android.widget.AdapterView<*>?,
+                    selected: View?,
+                    position: Int,
+                    id: Long,
+                ) {
+                    MercedesStartup
+                        .setMode(ctx, modes[position])
+                }
+
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+            }
 
         // HID 原始日志（键位校准）：默认关；打开后每帧 hidSendReport 写一行 HID-RAW
         val hidRawOn = view.findViewById<TextView>(R.id.btnHidRawOn)

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — mercedes-carlife (0.1.8)
+
+English: Parse DETECT incrementally and respond to the first valid marker; isolate connection ownership during Bluetooth/Wi-Fi handoff and terminal cleanup. Prepare the CarLife source before RECORD with bounded GOP preroll, preserve the audio choice on automatic starts, and add identity-scoped Mercedes startup experiments. Vehicle validation is pending.
+
+简体中文：修复首次 DETECT 回应与半包/粘包解析、蓝牙/Wi-Fi 交接和旧回调隔离，统一终态回收。提前准备 CarLife 源并缓存有上限的可解码 GOP，保留自动连接的声音选择，新增按接收端身份限定的奔驰启动方式实验。尚未完成本轮实车验证。
+
+
 ## Unreleased — mercedes-carlife (0.1.7)
 
 English: Publish optional CarPlay discovery services before pairing, retain a bounded reconnect window during Bluetooth bring-up, and pause outbound RFCOMM while bonding. Add diagnostics distinguishing the Wireless iAP v2 placeholder probe from a real iAP2 session. Mercedes vehicle compatibility remains unverified; this is an unsigned-for-release debug experiment.

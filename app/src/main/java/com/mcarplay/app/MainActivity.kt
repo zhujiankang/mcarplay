@@ -28,6 +28,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.DrawableCompat
+import com.mcarplay.app.audio.ConnectionAudioPrefs
 import com.mcarplay.app.bt.TargetDevicePrefs
 import com.mcarplay.app.carlife.CarLifeDiagnostics
 import com.mcarplay.app.carlife.CarLifeLauncher
@@ -559,6 +560,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun beginWithAudio(enabled: Boolean) {
+        ConnectionAudioPrefs
+            .setEnabled(this, enabled)
         SessionController.audioEnabledForSession = enabled
         // 声音只剩一个模式：通路协商（AAC-LC 优先，不行自动退 PCM）在会话内自动完成，
         // 不再有「兼容档」这种人工分支。
@@ -1233,6 +1236,8 @@ class MainActivity : AppCompatActivity() {
         // 车机侧声音授权（原「申请投屏权限」）：RECORD_AUDIO + MediaProjection 一起请求
         btnAudio.setOnClickListener {
             if (CarLifeLauncher.isAvailable(this)) {
+                ConnectionAudioPrefs
+                    .setEnabled(this, true)
                 SessionController.audioEnabledForSession = true
                 // 音频 SETUP 是控制通道上的网络请求，不能在主线程发
                 Bg.run("audio-native-start") { SessionController.maybeStartAudioNow(applicationContext) }

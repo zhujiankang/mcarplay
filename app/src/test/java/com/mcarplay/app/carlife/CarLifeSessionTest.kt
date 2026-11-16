@@ -33,6 +33,8 @@ class CarLifeSessionTest {
         assertNull(field("connector").get(session))
         assertTrue(summary, summary.contains("lastFailedPort=7240 lastFailure=REFUSED"))
         assertTrue(summary, summary.contains("timedOut=true stopped=true"))
+        assertTrue(summary, summary.contains("failed=false"))
+        assertTrue(summary, summary.contains("code=NONE"))
     }
 
     @Test

@@ -7,6 +7,7 @@ import com.mcarplay.app.audio.AudioProfile
 import com.mcarplay.app.audio.AudioSender
 import com.mcarplay.app.audio.AudioTuning
 import com.mcarplay.app.compat.InfoRequest
+import com.mcarplay.app.compat.MercedesStartup
 import com.mcarplay.app.compat.ReceiverCapabilities
 import com.mcarplay.app.compat.ReceiverCompatibility
 import com.mcarplay.app.compat.ReceiverDetectionRuntime
@@ -247,6 +248,25 @@ class AirPlayClient(
         private set
 
     /** 一轮的兼容策略及其唯一 RECORD 结果，包括应答未知的失败；close 时唤醒所有等待者。 */
+    private var startupPolicy: MercedesStartup.Policy? = null
+
+    @Synchronized
+    fun configureStartup(mode: MercedesStartup.Mode): MercedesStartup.Policy {
+        startupPolicy?.let { return it }
+        val policy =
+            MercedesStartup.resolve(
+                mode,
+                negotiatedInfo?.get("manufacturer") as? String ?: endpoint.receiverSignals.manufacturer,
+                negotiatedInfo?.get("model") as? String ?: endpoint.receiverSignals.model,
+            )
+        if (!recordAccepted && recordAttempt == null) {
+            singleRecordMode = policy.singleRecord || receiverCompatibility().singleRecordPerSession
+        }
+        startupPolicy = policy
+        log("STARTUP: mode=${policy.mode} singleRecord=${policy.singleRecord} audioFirst=${policy.audioFirst} experimental=true")
+        return policy
+    }
+
     private var singleRecordMode: Boolean? = null
     private var recordAttempt: java.util.concurrent.CompletableFuture<Boolean>? = null
     private var feedbackThread: Thread? = null
@@ -255,6 +275,34 @@ class AirPlayClient(
 
     /** RECORD 和网络 iAP 认证均完成，软件接收端才可在首帧前释放蓝牙。 */
     val networkHandoffReady: Boolean get() = recordAccepted && networkIapAuthenticated
+
+    /** 仅用于承载交接保护，不等于网络 iAP 认证或媒体已通过。 */
+    val networkSessionEstablished: Boolean
+        get() = sessionSetupAccepted && !sessionStopping && socket?.isClosed == false
+
+    var onTransportClosed: ((() -> Boolean) -> Unit)? = null
+    private var transportClosedEpoch: Long? = null
+
+    internal fun notifyTransportClosed(
+        epoch: Long,
+        eventSocket: Socket,
+    ) {
+        val callback =
+            synchronized(this) {
+                if (!isConnectionCurrent(epoch) ||
+                    eventCommandSocket !== eventSocket ||
+                    !sessionSetupAccepted ||
+                    transportClosedEpoch == epoch
+                ) {
+                    return
+                }
+                transportClosedEpoch = epoch
+                onTransportClosed
+            }
+        callback?.invoke {
+            synchronized(this) { isConnectionCurrent(epoch) && eventCommandSocket === eventSocket && sessionSetupAccepted }
+        }
+    }
 
     /** 本连接已请求车机关蓝牙（[releaseReceiverBluetooth]），随后的蓝牙断开属预期。 */
     @Volatile
@@ -656,6 +704,7 @@ class AirPlayClient(
                 recordAttempt?.complete(false)
                 recordAttempt = null
                 singleRecordMode = null
+                startupPolicy = null
                 iapLink = null
                 recordAccepted = false
                 networkIapAuthenticated = false
@@ -2714,6 +2763,7 @@ class AirPlayClient(
             return
         }
         val host = receiverHost() ?: return
+        val eventEpoch = connectionGeneration
         try {
             val socket = Socket()
             socket.connect(InetSocketAddress(resolveAddress(host), setup.eventPort), 5_000)
@@ -2738,14 +2788,22 @@ class AirPlayClient(
                         )
                     ControlCipher(phoneReadKey, phoneWriteKey)
                 }
-            registerEventCommandChannel(socket, cipher)
+            val previousEvent =
+                synchronized(this) {
+                    if (!isConnectionCurrent(eventEpoch)) {
+                        socket.close()
+                        return
+                    }
+                    eventCommandSocket.also { registerEventCommandChannel(socket, cipher) }
+                }
+            if (previousEvent !== socket) runCatching { previousEvent?.close() }
             Thread({
                 val input = socket.getInputStream()
                 val accumulator = RtspAccumulator()
                 var pending = ByteArray(0)
                 val buffer = ByteArray(8192)
                 try {
-                    while (true) {
+                    while (isConnectionCurrent(eventEpoch) && eventCommandSocket === socket) {
                         val count =
                             try {
                                 input.read(buffer)
@@ -2788,6 +2846,7 @@ class AirPlayClient(
                             if (!isRequest) continue
                             // 车机请求：立即回 200（echo 请求 CSeq）；/command 走分发，其余节流留痕
                             val cseq = CSEQ_REGEX.find(message.head)?.groupValues?.get(1)
+                            if (!isConnectionCurrent(eventEpoch) || eventCommandSocket !== socket) return@Thread
                             respondEventRequest(cseq)
                             if (!firstLine.contains("/command")) {
                                 unknownEventRequests++
@@ -2855,6 +2914,7 @@ class AirPlayClient(
                                 .ifEmpty { "无" } +
                             "；解析失败 $badEventCommands 条、非 /command 请求 $unknownEventRequests 条、车机非 200 应答 $eventNonOkResponses 条",
                     )
+                    notifyTransportClosed(eventEpoch, socket)
                 }
             }, "event-reader").apply {
                 isDaemon = true

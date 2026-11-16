@@ -38,7 +38,7 @@ class Iap2BluetoothServer(
     /** Phase 1 之后车机补发 0x4301（CarPlay 窗口晚开）时交给主控热更新端点。 */
     private val onEndpointUpdate: (Iap2SenderSession.CarPlayEndpoint) -> Unit = {},
     /** 发送端链路断开（保活泵退出）时通知主控（释放僵尸轮次，见 SessionController.onSenderLinkClosed）。 */
-    private val onLinkClosed: () -> Unit = {},
+    private val onLinkClosed: (() -> Boolean) -> Unit = {},
     /** 本进程已知的车机热点 SSID（本轮无新凭据时沿用，避免每轮 8 秒拆链）。 */
     private val knownCarSsid: () -> String? = { null },
     /** 车机是否已在 WiFi 上发过 ctrl 邀请（无凭据时据此不拆链）。 */
@@ -298,12 +298,13 @@ class Iap2BluetoothServer(
                 onEndpoint,
                 onWifiCredentials,
                 onEndpointUpdate,
-                onLinkClosed,
+                { onLinkClosed { synchronized(channelLock) { activeChannel === channel } } },
                 knownCarSsid,
                 receiverInvited,
                 onGeneration,
                 peerAddress = socket.remoteDevice?.address,
                 observation = observation,
+                isCurrentLink = { synchronized(channelLock) { activeChannel === channel } },
                 onSession = { session ->
                     synchronized(channelLock) { if (activeChannel === channel) activeSession = session }
                 },

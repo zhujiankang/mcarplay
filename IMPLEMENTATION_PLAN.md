@@ -1,10 +1,12 @@
 # mcarplay：CarWith 转无线 CarPlay 实施计划
 
-更新：2026-11-06。目标是在小米手机上取得 CarWith 的真实画面、声音和触控，再由 mcarplay 充当 CarPlay 手机端，连接支持无线 CarPlay 的车机。
+更新：2026-11-16。目标是在小米手机上取得 CarWith 的真实画面、声音和触控，再由 mcarplay 充当 CarPlay 手机端，连接支持无线 CarPlay 的车机。
 
 首版完成范围为：手机内手动发起连接、CarWith 画面、车机扬声器声音、车机触控回传。自动重连、车机麦克风、通话和语音上行不作为首版承诺。未在真实车机验证前，不声明任何车型“已适配”。
 
 ## 当前基线与结论
+
+- **11 月 16 日奔驰通信修复候选 `0.1.8-debug`（`mercedes-carlife`，未发布）：** 修复首次 DETECT 回应、增量解析及交接/旧回调隔离，统一媒体/控制终态，增加有界 GOP 预热与声音偏好保留。奔驰 `MB_D-M-5` 默认使用一次激活实验策略，可切换原顺序或音频优先；没有新实车验收。完整 standard 933 项、remote bridge 24 项均 0 失败/错误/跳过；Spotless、standard lint 和 debug APK 构建通过。测试方式见 `docs/MERCEDES-CARLIFE-0.1.8.md`。
 
 - **奔驰 CarLife 实验分支 `mercedes-carlife`（0.1.7-debug，未发布）：** 按用户更正的目标从 main `ab0cb938` 开始，保留原 Carlink 分支。对照 CarPToCarL 1.2.51，补提前公告、可选 Wireless iAP v2 占位探针、配对状态门控和 60 秒回连窗口。基础 CarPlay UUID 原已存在，未重复注册；未将占位服务当作真实 iAP2 通道。新增 10 项回归测试；完整 standard 909 项、remote bridge 24 项均 0 失败/错误/跳过，Spotless、standard lint 和 debug APK 构建通过。没有新增实车成功证据。详见 `docs/CARPTOCARL-MERCEDES-CARLIFE-REVIEW.zh-CN.md`。
 

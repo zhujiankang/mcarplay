@@ -213,8 +213,12 @@ object ReceiverCompatibility {
         networkHandoffReady: Boolean,
         /** 本会话已请求车机关蓝牙（disableBluetooth）：随后的蓝牙断开是预期结果，不收会话。 */
         bluetoothReleased: Boolean = false,
+        /** 初始 SETUP 已确认且控制连接仍属于当前代次，允许 RFCOMM 向 Wi-Fi 交接。 */
+        networkSessionEstablished: Boolean = false,
     ): BluetoothLossAction =
-        if (bluetoothReleased || videoRunning || (policy.bluetoothRole == BluetoothRole.NETWORK_HANDOFF && networkHandoffReady)) {
+        if (bluetoothReleased || videoRunning || networkSessionEstablished ||
+            (policy.bluetoothRole == BluetoothRole.NETWORK_HANDOFF && networkHandoffReady)
+        ) {
             BluetoothLossAction.KEEP_NETWORK_SESSION
         } else {
             BluetoothLossAction.END_SESSION

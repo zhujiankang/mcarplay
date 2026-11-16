@@ -33,16 +33,22 @@ internal fun Iap2LinkChannel.runSenderSession(
     observation: ReceiverObservation? = ReceiverDetectionRuntime.observation(peerAddress),
     /** 会话对象建好、开始 bring-up 之前回调；供退役链路时发 0xEA01（见 [retireControlLink]）。 */
     onSession: (Iap2SenderSession) -> Unit = {},
+    isCurrentLink: () -> Boolean = { true },
 ) {
+    if (!isCurrentLink()) return
     val session =
         Iap2SenderSession(
             this,
             { line -> log(line) },
             resolveBluetoothMac(context, log),
             DeviceIdentity.deviceName(context),
-            { wifi -> if (ReceiverDetectionRuntime.isCurrent(observation)) onWifiCredentials(wifi) },
+            { wifi -> if (isCurrentLink() && ReceiverDetectionRuntime.isCurrent(observation)) onWifiCredentials(wifi) },
             { update ->
-                if (ReceiverDetectionRuntime.isCurrent(observation)) onEndpointUpdate(update.copy(observation = observation))
+                if (isCurrentLink() &&
+                    ReceiverDetectionRuntime.isCurrent(observation)
+                ) {
+                    onEndpointUpdate(update.copy(observation = observation))
+                }
             },
             knownCarSsid,
             receiverInvited,
@@ -51,19 +57,19 @@ internal fun Iap2LinkChannel.runSenderSession(
             receiverBinding = observation?.binding,
             rememberMfi = !ReceiverDetectionRuntime.collecting(observation),
             onMilestone = { milestone ->
-                if (ReceiverDetectionRuntime.isCurrent(observation)) ConnectionDiagnostics.milestoneCurrent(milestone)
+                if (isCurrentLink() && ReceiverDetectionRuntime.isCurrent(observation)) ConnectionDiagnostics.milestoneCurrent(milestone)
             },
         )
     onSession(session)
     val endpoint = session.run(timeoutMillis)
+    if (!isCurrentLink() || !ReceiverDetectionRuntime.isCurrent(observation)) return
     onGeneration(session.linkGeneration)
-    if (!ReceiverDetectionRuntime.isCurrent(observation)) return
     onEndpoint(endpoint.copy(observation = observation))
     // Phase 2 过渡：保持控制通道存活记录配件消息；AirPlay 配对由 onEndpoint 回调发起
     session.pumpIncomingForever()
     // 链路断开（保活泵退出）：通知主控释放「会话处理中」——否则车机拆链后重连带来的
     // 新端点会被僵尸轮次堵门（2026-10-22 奥迪 3315 真机定谳，见 SessionController.onSenderLinkClosed）
-    if (ReceiverDetectionRuntime.isCurrent(observation)) onLinkClosed()
+    if (isCurrentLink() && ReceiverDetectionRuntime.isCurrent(observation)) onLinkClosed()
 }
 
 /** 退役链路时，0xEA01 交给 socket 后到关闭 RFCOMM 之间的冲刷宽限。 */

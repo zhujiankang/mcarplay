@@ -44,4 +44,11 @@
     <string name="sf_passat_norebuild">已选：点图标不重建主屏流</string>
     <string name="lay_carplay_discovery">配对前发布 CarPlay 能力（实验）</string>
     <string name="lay_carplay_discovery_desc">打开应用后保持蓝牙服务可用，供车机在配对时识别。额外服务仅为兼容探针，不能保证奔驰识别。关闭后，额外服务在下次连接时撤销。</string>
+    <string name="lay_mercedes_startup">奔驰启动方式（实验）</string>
+    <string name="lay_mercedes_startup_desc">仅用于 Mercedes-Benz / MB_D-M-5，下次连接生效。默认一次激活；可对比原顺序或声音优先。尚未实车验证。</string>
+    <string-array name="mercedes_startup_modes">
+        <item>原顺序</item>
+        <item>一次激活（默认）</item>
+        <item>声音优先，一次激活</item>
+    </string-array>
 </resources>

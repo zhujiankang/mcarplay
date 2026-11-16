@@ -156,6 +156,9 @@ class Iap2LinkEngine(
     /** 诊断：每个出向链路帧的摘要（仅链路层帧，用于对照真车协商时序）。 */
     var onFrameSent: ((control: Int, sequence: Int, ack: Int, sessionId: Int, size: Int) -> Unit)? = null
 
+    /** 完整且校验匹配的 DETECT；由增量解析器识别，不依赖传输分块。默认仅消费。 */
+    var onDetect: (() -> Unit)? = null
+
     private var unknownSessionDropped = 0
 
     private val unacknowledged = ArrayList<Packet>()
@@ -252,6 +255,11 @@ class Iap2LinkEngine(
         state = State.NEGOTIATING
     }
 
+    /** 只回应一次探测，不设置周期重发，避免把对端重新拉回探测状态。 */
+    fun respondToDetect() {
+        appendOutput(MARKER)
+    }
+
     fun feed(
         bytes: ByteArray,
         nowMillis: Long,
@@ -339,10 +347,17 @@ class Iap2LinkEngine(
     // ---- 接收解析 ----
 
     private fun parseAvailable(nowMillis: Long): Boolean {
-        // 丢弃帧头前的杂字节（含对端 marker FF55…）
-        while (receive.size >= 2 &&
-            !(receive[0] == 0xFF.toByte() && receive[1] == 0x5A.toByte())
-        ) {
+        // DETECT 与 FF5A 帧共用字节流；保留半个 DETECT，并排空粘在一起的多个消息。
+        while (receive.size >= 2) {
+            if (receive[0] == 0xFF.toByte() && receive[1] == 0x5A.toByte()) break
+            if (receive[0] == MARKER[0] && receive[1] == MARKER[1]) {
+                if (receive.size < MARKER.size) return false
+                if (receive.peek(MARKER.size).contentEquals(MARKER)) {
+                    receive.discard(MARKER.size)
+                    onDetect?.invoke()
+                    return true
+                }
+            }
             receive.discard(1)
         }
         if (receive.size < HEADER_BYTES) return false

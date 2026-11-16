@@ -1703,3 +1703,9 @@ APK 指纹、完整矩阵、截图/日志的证据边界及同车换手机步骤
 手机日志型号 `24129PN74C`，Android 16/API 36，用户称 HyperOS OS3.0，CarWith `4.0.9-20260629 (104000009)`、小米 CarLife `8.6.6 (258)`。已提供日志只证明本机 SDP 注册及失败的 RFCOMM 尝试；后续片段有 BONDING 期间继续尝试、快速 READ_FAILED、最终 BOND_NONE 和自动撤销监听，未证明苹果身份检查或 MFi 拒绝。没有持续 CarWith 视频、声音、触控通过的证据。
 
 新增预发布模式与回连窗口是待验证的候选修复，不是本车适配结论。实验步骤及与 CarPToCarL 1.2.51 的固定版本对比见 [分析报告](CARPTOCARL-MERCEDES-CARLIFE-REVIEW.zh-CN.md)。原始用户日志不提交仓库。
+
+## 2026-11-16：奔驰进入 AirPlay，但媒体未持续
+
+0.1.7-debug 的实际 APK 指纹与交付包一致。用户反馈奔驰显示 CarPlay 图标、CarWith 短暂出现。日志确认真实 iAP2 回连、蓝牙识别/认证、热点/ctrl、AirPlay 配对及 RECORD 成功；本机七路连接、RSA/AES/准入及 1280×720@30 初始化通过。两轮视频/事件通道先出现 EOF/reset，随后才收到源端首帧，写入 Broken pipe 后由 mcarplay 关闭七口；不能归因于 CarWith 崩溃或证明持续 CarWith 桌面输出。
+
+手机型号字符串 `24129PN74C`，Android 16/API 36，CarWith `4.0.9-20260629 (104000009)`；本轮 CarLife 已变为 `8.8.5 (274)`。奔驰 `/info` 自报 `Mercedes-Benz / MB_D-M-5`、firmwareRevision `5.0.0`、sourceVersion `320.17.8`、1624×1150@60。这些字段不直接等同于整车 MBUX 用户界面版本。新增 0.1.8 是代码修复候选，没有本轮实车成功结果，见 [测试说明](MERCEDES-CARLIFE-0.1.8.md)。

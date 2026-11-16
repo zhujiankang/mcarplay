@@ -44,4 +44,11 @@
     <string name="sf_passat_norebuild">Selected: no stream rebuild on icon tap</string>
     <string name="lay_carplay_discovery">Publish CarPlay before pairing (experimental)</string>
     <string name="lay_carplay_discovery_desc">Keep Bluetooth services available after opening the app so the head unit can discover them during pairing. The extra service is a compatibility probe; Mercedes recognition is unverified. Turning this off removes the extra service on the next connection.</string>
+    <string name="lay_mercedes_startup">Mercedes startup (experimental)</string>
+    <string name="lay_mercedes_startup_desc">Only for Mercedes-Benz / MB_D-M-5; applies on the next connection. One activation is the default. Compare the original order or audio first. Vehicle validation is pending.</string>
+    <string-array name="mercedes_startup_modes">
+        <item>Original order</item>
+        <item>One activation (default)</item>
+        <item>Audio first, one activation</item>
+    </string-array>
 </resources>

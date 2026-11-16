@@ -73,3 +73,8 @@ The implementation uses mcarplay's grouped listener lifecycle; it does not
 bundle the reference APK or proprietary OEM components. This acknowledgement
 is not a claim of Mercedes compatibility. See
 [the comparison and test plan](docs/CARPTOCARL-MERCEDES-CARLIFE-REVIEW.zh-CN.md).
+
+The 0.1.8 work also compares DETECT stream parsing, first-probe response,
+connection ownership and bounded source preparation with the same pinned
+CarPToCarL version. mcarplay retains its own request-result/epoch checks and
+implements identity-scoped experiments rather than copying the entire stack.

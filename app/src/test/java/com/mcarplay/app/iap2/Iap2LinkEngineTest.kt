@@ -8,6 +8,30 @@ import org.junit.Test
 /** 两个链路引擎通过直接交换输出字节完成握手与数据往返（无线程、无 I/O）。 */
 class Iap2LinkEngineTest {
     @Test
+    fun detectParsingIsIncrementalAndDoesNotConsumeFollowingSyn() {
+        val engine = Iap2LinkEngine()
+        var detected = 0
+        engine.onDetect = { detected++ }
+        engine.enterNegotiating()
+        val peer = Iap2LinkEngine()
+        peer.start(0)
+        val stream = Iap2LinkEngine.MARKER + peer.takeOutput()
+        stream.forEach { engine.feed(byteArrayOf(it), 0) }
+        assertEquals(2, detected)
+        assertTrue(engine.peerSynchronization != null)
+        assertTrue(!engine.isDead)
+    }
+
+    @Test
+    fun invalidDetectResynchronizesToTheNextCompleteMarker() {
+        val engine = Iap2LinkEngine()
+        var detected = 0
+        engine.onDetect = { detected++ }
+        engine.feed(Iap2LinkEngine.MARKER.copyOf().also { it[4] = 0 } + Iap2LinkEngine.MARKER, 0)
+        assertEquals(1, detected)
+    }
+
+    @Test
     fun handshakeReachesNormalOnBothSides() {
         val phone = Iap2LinkEngine()
         val accessory = Iap2LinkEngine()

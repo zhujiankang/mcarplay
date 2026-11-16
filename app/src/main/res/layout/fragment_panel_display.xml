@@ -190,6 +190,28 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
+            android:labelFor="@+id/mercedesStartupMode"
+            android:text="@string/lay_mercedes_startup"
+            android:textColor="@color/ui_text"
+            android:textSize="14sp" />
+
+        <Spinner
+            android:id="@id/mercedesStartupMode"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:entries="@array/mercedes_startup_modes" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/lay_mercedes_startup_desc"
+            android:textColor="@color/ui_text_secondary"
+            android:textSize="12sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
             android:text="@string/lay_hid_raw"
             android:textColor="@color/ui_text"
             android:textSize="14sp" />

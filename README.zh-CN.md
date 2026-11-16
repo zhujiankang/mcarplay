@@ -1,5 +1,7 @@
 # mcarplay
 
+> `mercedes-carlife` 的 `0.1.8-debug` 修复 DETECT 解析和会话生命周期，加入有界 CarLife 源准备并保留声音选择。奔驰启动方式仍是实验策略，尚未实车验收。见 [本轮测试说明](docs/MERCEDES-CARLIFE-0.1.8.md)。
+
 > `mercedes-carlife` 实验分支：目标为同机 **CarWith → CarLife → 无线 CarPlay**。新增配对前公告、可选 Wireless iAP v2 探针、配对状态门控与有界回连窗口；尚未验证奔驰 GLC260 成功。代码对比、限制和实车步骤见 [分析报告](docs/CARPTOCARL-MERCEDES-CARLIFE-REVIEW.zh-CN.md)。
 
 <img src="docs/branding/mcarplay-icon.png" width="96" height="96" alt="mcarplay 应用图标">

@@ -140,7 +140,7 @@ class CarLifeSession(
         return "schema=1 run=$sourceRun running=${running.get() && !endReported} failed=$endReported " +
             "elapsedMs=$elapsed state=${state.name} " +
             "entry=$entryResult route=$entryRoute background=$entryLaunchedInBackground " +
-            "entryBlockedSuspected=$entryBlockedSuspected code=${endDiagnosticCode.name} " +
+            "entryBlockedSuspected=$entryBlockedSuspected code=${if (endReported) endDiagnosticCode.name else "NONE"} " +
             "commandFrames=$commandFramesReceived carwithNotification=[${notificationProbeSummary()}] " +
             "listeners=[${connector?.diagnosticSummary() ?: lastChannelSummary}] video=${videoInfo()} ${stats.snapshot().summary()}"
     }

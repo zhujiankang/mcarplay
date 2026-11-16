@@ -24,6 +24,61 @@ import java.util.concurrent.TimeUnit
 
 /** 实际 RTSP 回环：检查发送数量、停止和重连，而非仅检查策略枚举。 */
 class AirPlayRecordLifecycleTest {
+    private fun configureMercedes(
+        client: AirPlayClient,
+        mode: com.mcarplay.app.compat.MercedesStartup.Mode,
+    ) {
+        AirPlayClient::class.java.getDeclaredField("negotiatedInfo").apply { isAccessible = true }.set(
+            client,
+            mapOf("manufacturer" to "Mercedes-Benz", "model" to "MB_D-M-5"),
+        )
+        client.configureStartup(mode)
+    }
+
+    @Test
+    fun mercedesSingleActivationIsScopedToTheConnectionAndCannotBeChangedMidStream() {
+        Peer().use { peer ->
+            val client = client(peer.port, chery = false)
+            try {
+                assertTrue(client.reconnect())
+                configureMercedes(client, com.mcarplay.app.compat.MercedesStartup.Mode.SINGLE_RECORD)
+                assertTrue(client.record())
+                configureMercedes(client, com.mcarplay.app.compat.MercedesStartup.Mode.ORIGINAL)
+                assertTrue(client.record())
+                assertEquals("RECORD", peer.next()!!.method)
+                assertNull(peer.next(150))
+                client.close()
+                assertTrue(client.reconnect())
+                configureMercedes(client, com.mcarplay.app.compat.MercedesStartup.Mode.ORIGINAL)
+                assertTrue(client.record())
+                assertTrue(client.record())
+                assertEquals("RECORD", peer.next()!!.method)
+                assertEquals("RECORD", peer.next()!!.method)
+            } finally {
+                client.close()
+            }
+        }
+    }
+
+    @Test
+    fun mercedesRejectedSingleRecordRemainsFailureInsteadOfBecomingFalseSuccess() {
+        Peer().use { peer ->
+            peer.reply = { it.respond(403) }
+            val client = client(peer.port, chery = false)
+            try {
+                assertTrue(client.reconnect())
+                configureMercedes(client, com.mcarplay.app.compat.MercedesStartup.Mode.AUDIO_FIRST)
+                assertFalse(client.record())
+                assertFalse(client.record())
+                assertFalse(client.sessionActive)
+                assertEquals("RECORD", peer.next()!!.method)
+                assertNull(peer.next(150))
+            } finally {
+                client.close()
+            }
+        }
+    }
+
     @Test
     fun observedCheryStackSendsOnlyOneRecordPerSession() {
         Peer().use { peer ->

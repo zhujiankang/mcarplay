@@ -431,3 +431,18 @@ flags for the still-open servers. The preceding discovery run ends separately;
 use both runs when following an inbound connection through promotion. Existing
 peer aliasing and redaction rules apply; no new location or pairing material is
 collected. See the [comparison and vehicle test plan](CARPTOCARL-MERCEDES-CARLIFE-REVIEW.zh-CN.md).
+
+## 0.1.8 connection lifecycle diagnostics
+
+`STARTUP: mode=... singleRecord=... audioFirst=...` records a connection-scoped
+experimental startup choice. Only the observed Mercedes-Benz / MB_D-M-5 identity
+uses the configured Mercedes mode; other receivers retain their existing policy.
+`CARLIFE-PREWARM` records source preparation and the count of decodable cached
+frames handed to an activated sender. Preparation, a first frame, or a successful
+socket write alone does not establish vehicle display success.
+
+The first valid DETECT is acknowledged once; fragmentation and coalescing do not
+change the protocol decision. Bluetooth handoff, stale callbacks and transport
+termination are scoped to the owning connection. A normal CarLife stop reports
+`code=NONE` rather than the default failure label; actual source failures retain
+their error. The audio teardown hint no longer asserts a vehicle watchdog period.

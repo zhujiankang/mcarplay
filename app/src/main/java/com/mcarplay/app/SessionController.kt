@@ -13,6 +13,7 @@ import com.mcarplay.app.audio.AudioProfileMemory
 import com.mcarplay.app.audio.AudioSender
 import com.mcarplay.app.audio.AudioTuning
 import com.mcarplay.app.audio.CarLifeAudioBridge
+import com.mcarplay.app.audio.ConnectionAudioPrefs
 import com.mcarplay.app.bt.AutoConnectPrefs
 import com.mcarplay.app.bt.BluetoothBringupGrace
 import com.mcarplay.app.bt.BluetoothDiagnostics
@@ -28,15 +29,19 @@ import com.mcarplay.app.carlife.CarLifeDiagnostics
 import com.mcarplay.app.carlife.CarLifeJoinGate
 import com.mcarplay.app.carlife.CarLifeLaunchStrategy
 import com.mcarplay.app.carlife.CarLifeLauncher
+import com.mcarplay.app.carlife.CarLifePreroll
 import com.mcarplay.app.carlife.CarLifeProtocol
 import com.mcarplay.app.carlife.CarLifeSession
 import com.mcarplay.app.carlife.CarLifeSessionRegistry
+import com.mcarplay.app.carlife.CarLifeVideoAccessUnit
 import com.mcarplay.app.carlife.mapCarLifeTouch
 import com.mcarplay.app.compat.CompatibilityPrefs
+import com.mcarplay.app.compat.MercedesStartup
 import com.mcarplay.app.compat.PassatReturnPolicy
 import com.mcarplay.app.compat.PassatReturnStrategy
 import com.mcarplay.app.compat.ReceiverCompatibility
 import com.mcarplay.app.compat.ReceiverDetectionRuntime
+import com.mcarplay.app.compat.ReceiverObservation
 import com.mcarplay.app.compat.ReceiverProbePlan
 import com.mcarplay.app.compat.VehiclePreset
 import com.mcarplay.app.compat.VehiclePresetRuntime
@@ -378,6 +383,9 @@ object SessionController {
     /** WiFi 绑定互斥：auto-join 与端点交接两条路径可能同时绑定同一热点。 */
     private val wifiBindLock = Any()
 
+    private val endpointGeneration =
+        java.util.concurrent.atomic
+            .AtomicLong()
     private val bluetoothDiagnostics = BluetoothDiagnostics(ConnectionDiagnostics::runtimeLog)
 
     @Volatile
@@ -472,7 +480,9 @@ object SessionController {
         if (disconnectCompletion != null || discoverySuppressed) return false
         bringupGrace.cancel()
         if (discoveryOnly) {
-            audioEnabledForSession = CarLifeLauncher.isAvailable(context)
+            audioEnabledForSession = ConnectionAudioPrefs
+                .enabled(context) &&
+                CarLifeLauncher.isAvailable(context)
             appendLog("BT-DISCOVERY: 收到真实 iAP2 连入，提升为正式连接（协议仍需继续协商）")
             startConnection(context)
         }
@@ -535,6 +545,9 @@ object SessionController {
 
     @Volatile
     private var carLifeOutput: CarLifeOutput? = null
+    private val carLifeStreamLock = Any()
+    private val carLifePreroll =
+        CarLifePreroll()
 
     @Volatile
     private var screenStreamRecovery: (() -> ScreenRecoveryResult)? = null
@@ -568,7 +581,10 @@ object SessionController {
     internal fun releaseCarLifeSession(session: CarLifeSession): Boolean =
         synchronized(carLifeSessions) {
             if (!carLifeSessions.release(session.lease)) return@synchronized false
-            if (formalCarLifeSession === session) formalCarLifeSession = null
+            if (formalCarLifeSession === session) {
+                formalCarLifeSession = null
+                carLifePreroll.clear()
+            }
             if (diagnosticCarLifeSession === session) diagnosticCarLifeSession = null
             true
         }
@@ -687,11 +703,15 @@ object SessionController {
      * 能走到那里说明 BT 组件仍在运行（用户取消路径 disconnect 会停组件、被端点
      * 守卫拦截），清除是安全的。
      */
-    fun onSenderLinkClosed() {
+    @Synchronized
+    fun onSenderLinkClosed(ownsLink: () -> Boolean = { true }) {
+        if (!ownsLink()) return
         if (bluetoothDisconnectAction() == ReceiverCompatibility.BluetoothLossAction.KEEP_NETWORK_SESSION) return
         if (sessionStarting.compareAndSet(true, false)) {
             ConnectionDiagnostics.issueCurrent(DiagnosticCode.BT_LINK_CLOSED)
             connectCancelled = true
+            endpointGeneration.incrementAndGet()
+            retireSession()
             appendLog(">>> 本轮蓝牙链路断开——释放「会话处理中」，等待车机重连端点接手")
         }
     }
@@ -877,6 +897,7 @@ object SessionController {
             videoSender?.isRunning == true,
             client?.networkHandoffReady == true,
             client?.bluetoothReleaseRequested == true,
+            networkSessionEstablished = client?.networkSessionEstablished == true,
         )
     }
 
@@ -891,6 +912,69 @@ object SessionController {
         }
     }
 
+    private fun submitCarLifeUnit(
+        output: CarLifeOutput,
+        unit: CarLifeVideoAccessUnit,
+    ) {
+        val joinsBefore = output.gate.joins
+        val frame = output.gate.admit(unit) ?: return
+        if (output.gate.joins != joinsBefore) {
+            appendLog(
+                "CARLIFE: 入流门控第 ${output.gate.joins} 次接入（此前等 IDR 丢弃 ${output.gate.droppedBeforeLastJoin} 帧，" +
+                    "补参数集=${output.gate.filledAtLastJoin.ifEmpty { "无（帧内已带齐）" }}）",
+            )
+        }
+        ConnectionDiagnostics.timeline.sourceFrame(output.attempt)
+        val sender = output.sender
+        val dimensions = frame.dimensions()
+        if (dimensions != null && sender.isNewSourceSize(dimensions.first, dimensions.second)) {
+            ConnectionDiagnostics.timeline.note(
+                output.attempt,
+                "CARWITH_VIDEO_FORMAT ${dimensions.first}x${dimensions.second}",
+            )
+            sender.setVideoDimensions(dimensions.first, dimensions.second)
+            appendLog("CARLIFE: 实际视频尺寸 ${dimensions.first}x${dimensions.second}")
+        }
+        if (!sender.submitExternalFrame(frame.toExternalVideoFrame())) output.gate.reset()
+    }
+
+    /** 已取得车机网络端点后准备源端，不等待 RECORD；输出仍被媒体激活状态门控。 */
+    @Synchronized
+    private fun prepareCarLifeSource(
+        context: Context,
+        requestedSize: Pair<Int, Int>? = null,
+    ): CarLifeSession? {
+        currentCarLifeSession?.takeIf { it.isRunning }?.let { return it }
+        if (connectCancelled || disconnectCompletion != null) return null
+        currentCarLifeSession?.let {
+            it.stop()
+            releaseCarLifeSession(it)
+        }
+        carLifePreroll.clear()
+        val source = newFormalCarLifeSession(context, requestedSize)
+        if (!claimCarLifeSession(CarLifeSessionRegistry.Owner.FORMAL, source)) return null
+        armAutoPlaySuppression()
+        if (!source.start()) {
+            releaseCarLifeSession(source)
+            return null
+        }
+        appendLog("CARLIFE-PREWARM: 源端已请求准备，尚未向车机发送视频")
+        return source
+    }
+
+    private fun attachCarLifeOutput(output: CarLifeOutput) {
+        synchronized(carLifeStreamLock) {
+            carLifeOutput = output
+            val pending = carLifePreroll.drain()
+            appendLog("CARLIFE-PREWARM: 接入已激活的视频通道，缓存帧=${pending.size}")
+            pending.forEach { submitCarLifeUnit(output, it) }
+        }
+        val source = currentCarLifeSession
+        Bg.run("carlife-prime-idr") {
+            if (source != null && currentCarLifeSession === source && carLifeOutput === output) source.requestKeyFrame()
+        }
+    }
+
     /** 正式会话的 CarLife 源：输出按 [carLifeOutput] 路由，旧轮迟到回调被隔离。 */
     private fun newFormalCarLifeSession(
         context: Context,
@@ -900,29 +984,13 @@ object SessionController {
         session =
             CarLifeSession(
                 application = context.applicationContext as android.app.Application,
-                onAccessUnit = onAccessUnit@{ unit ->
-                    if (currentCarLifeSession !== session) return@onAccessUnit
-                    val output = carLifeOutput ?: return@onAccessUnit
-                    val joinsBefore = output.gate.joins
-                    val frame = output.gate.admit(unit) ?: return@onAccessUnit
-                    if (output.gate.joins != joinsBefore) {
-                        appendLog(
-                            "CARLIFE: 入流门控第 ${output.gate.joins} 次接入（此前等 IDR 丢弃 ${output.gate.droppedBeforeLastJoin} 帧，" +
-                                "补参数集=${output.gate.filledAtLastJoin.ifEmpty { "无（帧内已带齐）" }}）",
-                        )
+                onAccessUnit = { unit ->
+                    synchronized(carLifeStreamLock) {
+                        if (currentCarLifeSession === session) {
+                            val output = carLifeOutput
+                            if (output == null) carLifePreroll.offer(unit) else submitCarLifeUnit(output, unit)
+                        }
                     }
-                    ConnectionDiagnostics.timeline.sourceFrame(output.attempt)
-                    val sender = output.sender
-                    val dimensions = frame.dimensions()
-                    if (dimensions != null && sender.isNewSourceSize(dimensions.first, dimensions.second)) {
-                        ConnectionDiagnostics.timeline.note(
-                            output.attempt,
-                            "CARWITH_VIDEO_FORMAT ${dimensions.first}x${dimensions.second}",
-                        )
-                        sender.setVideoDimensions(dimensions.first, dimensions.second)
-                        appendLog("CARLIFE: 实际视频尺寸 ${dimensions.first}x${dimensions.second}")
-                    }
-                    if (!sender.submitExternalFrame(frame.toExternalVideoFrame())) output.gate.reset()
                 },
                 onEnded = { reason ->
                     // 旧源的迟到回调不能停掉新一轮的发送端
@@ -1086,6 +1154,7 @@ object SessionController {
         preserveDetection: Boolean = false,
     ) {
         connectCancelled = true
+        endpointGeneration.incrementAndGet()
         bringupGrace.cancel()
         discoverySuppressed = true
         discoveryOnly = false
@@ -1277,6 +1346,92 @@ object SessionController {
         }
     }
 
+    @Synchronized
+    internal fun beginEndpointAttempt(observation: ReceiverObservation?): Long? {
+        if (discoverySuppressed || disconnectCompletion != null || !ReceiverDetectionRuntime.isCurrent(observation)) return null
+        if (videoSender?.isRunning == true || !sessionStarting.compareAndSet(false, true)) return null
+        connectCancelled = false
+        bringupGrace.cancel()
+        return endpointGeneration.incrementAndGet()
+    }
+
+    @Synchronized
+    private fun installVideoSender(
+        client: AirPlayClient,
+        generation: Long,
+        sender: VideoSender,
+    ): Boolean {
+        if (currentClient !== client || endpointGeneration.get() != generation || connectCancelled) return false
+        videoSender = sender
+        return true
+    }
+
+    @Synchronized
+    private fun activateCarLifeVideo(
+        context: Context,
+        client: AirPlayClient,
+        generation: Long,
+        source: CarLifeSession,
+        output: CarLifeOutput,
+    ): Boolean {
+        if (currentClient !== client ||
+            endpointGeneration.get() != generation ||
+            connectCancelled ||
+            client.sessionStopping ||
+            currentCarLifeSession !== source ||
+            !source.isRunning ||
+            videoSender !== output.sender
+        ) {
+            return false
+        }
+        if (!output.sender.start {}) return false
+        StreamingWifiLock.acquire(context)
+        streamingDiagnosticAttempt = output.attempt
+        ScreenLockMonitor.start(context, log = ::appendLog, note = { ConnectionDiagnostics.timeline.note(output.attempt, it) })
+        attachCarLifeOutput(output)
+        return true
+    }
+
+    @Synchronized
+    private fun installClient(
+        client: AirPlayClient,
+        generation: Long,
+    ): Boolean {
+        if (endpointGeneration.get() != generation || connectCancelled || disconnectCompletion != null) return false
+        currentClient = client
+        return true
+    }
+
+    @Synchronized
+    private fun endClientSession(
+        client: AirPlayClient,
+        generation: Long,
+        attempt: String,
+        reason: String,
+        sender: VideoSender? = null,
+    ) {
+        if (currentClient !== client ||
+            endpointGeneration.get() != generation ||
+            (sender != null && videoSender !== sender)
+        ) {
+            return
+        }
+        appendLog("SESSION: $reason，退役本轮控制/媒体资源")
+        appendLog("SESSION: 车机交互 forceKeyFrame=$forceKeyFrameCount requestUI=$requestUiCount touches=$touchLogCount")
+        lastEnvironmentSampleAt = 0L
+        ConnectionDiagnostics.timeline.videoEnded(attempt)
+        ReceiverDetectionRuntime.mediaEnded(client.currentEndpoint.observation)
+        attributeAudioTeardown()
+        endpointGeneration.incrementAndGet()
+        bringupGrace.cancel()
+        connectCancelled = true
+        sessionStarting.set(false)
+        retireSession()
+        bluetoothClient?.armAfterSessionEnd()
+        cleanupShellFallbackNetwork()
+        appendLog("SESSION: 本轮已结束，旧心跳与媒体资源已停止，等待车机重新建立连接")
+    }
+
     /** 会话结束/新周期开始前彻底退役上一代会话（旧管线泄漏会累积编码器/虚拟显示器，最终 dequeueBuffer -19）。 */
     fun retireSession(
         closeClient: Boolean = true,
@@ -1334,6 +1489,10 @@ object SessionController {
             appendLog("AUDIO: 会话正在结束——跳过动态开启声音")
             return
         }
+        if (!client.sessionActive || videoSender?.isRunning != true) {
+            appendLog("AUDIO: 声音选择已保存，待主会话激活后接入")
+            return
+        }
         val secret = currentSharedSecret
         if (secret == null) {
             appendLog("MODE: 明文会话（未配对）无共享密钥——不补启音频")
@@ -1352,6 +1511,7 @@ object SessionController {
         host: String?,
         logLine: String,
     ): Boolean {
+        if (currentClient !== client || !client.sessionActive || client.sessionStopping) return false
         val started = startAudioChannel(context, client, secret, host)
         if (started) {
             appendLog(logLine)
@@ -2532,7 +2692,7 @@ object SessionController {
         // 从此永远没声。
         currentClient?.let { client ->
             if (client.mib3LinkArmed && !client.mib3ControlSessionDone) {
-                appendLog("AUDIO: 会话在链路协商完成前被车机拆掉（~10s 看门狗形态）——不记音频档位")
+                appendLog("AUDIO: 网络 iAP 协商未完成，断线原因尚未确定——不记音频档位")
                 activeAudioProfile = null
                 activeAudioStartedAt = 0L
                 return
@@ -3268,32 +3428,18 @@ object SessionController {
     ) {
         val context = appContext ?: return
 
-        fun ownsConnection(): Boolean = ReceiverDetectionRuntime.isCurrent(endpoint.observation)
+        val generation = beginEndpointAttempt(endpoint.observation) ?: return
+
+        fun ownsConnection(): Boolean = endpointGeneration.get() == generation && ReceiverDetectionRuntime.isCurrent(endpoint.observation)
 
         fun wasCancelled(): Boolean = connectCancelled || !ownsConnection()
         if (!ownsConnection()) return
-        // 冗余端点防护：接收端控制器（DiPlay 实测）在我们配对推流后才完成既有的
-        // RFCOMM 重连并重发 0x4301。此时重启配对会 retireSession 掉健康会话
-        // （编码器 stop 竞态 = 「连上后自动断开」循环的根因）。推流中的端点一律忽略；
-        // 真断连时推流自行终止（isRunning=false），下一个端点自然接续重连。
-        if (videoSender?.isRunning == true) {
-            appendLog(">>> [$source] 会话推流中——忽略冗余端点（接收端周期重连的重复 0x4301）")
-            return
-        }
-        if (!sessionStarting.compareAndSet(false, true)) {
-            appendLog(">>> [$source] 已有会话在处理中，忽略本次端点（等待上一轮结束）")
-            return
-        }
         val diagnosticAttempt = ConnectionDiagnostics.receiverAttempt()
         ReceiverDetectionRuntime.attach(endpoint.observation, diagnosticAttempt)
         ConnectionDiagnostics.timeline.note(
             diagnosticAttempt,
             "RECEIVER srcvers=${endpoint.sourceVersion} features=${endpoint.advertisedFeatures}",
         )
-        // 新轮次起步清取消标志：上一轮可能因「BT 链路断开」置位退出（见
-        // onSenderLinkClosed）——能走到这里说明 BT 组件仍在运行（用户取消路径会
-        // 停组件、被上方守卫拦截），该标志属于已退场的旧轮次，不清会误伤本轮。
-        connectCancelled = false
         // 新一轮交接开始：清掉上一轮（可能中途失败）遗留的晚到端点暂存，
         // 否则它会在本轮的 drain 阶段覆盖掉本会话刚解析出的端点。
         pendingEndpointUpdate = null
@@ -3369,6 +3515,7 @@ object SessionController {
         // 绑定完成后再并行做三件事：ctrl 广播针对新网络重注册、后台发现 _airplay._tcp、
         // 等车机 ctrl 邀请（车机已发现我们的权威信号）。
         val continueWithNetwork: (Boolean) -> Unit = proceed@{ bound ->
+            if (wasCancelled()) return@proceed
             if (!bound) {
                 ConnectionDiagnostics.timeline.abandon(diagnosticAttempt, wasCancelled(), DiagnosticCode.WIFI_JOIN_FAILED)
                 phaseHint = t(R.string.sc_not_on_hotspot_endpoint, endpoint.ssid)
@@ -3458,14 +3605,27 @@ object SessionController {
                                 )
                             },
                         ).also { created ->
+                            created.onTransportClosed = { ownsTransport ->
+                                Bg.run("airplay-transport-ended") {
+                                    synchronized(this) {
+                                        if (ownsTransport()) endClientSession(created, generation, diagnosticAttempt, "事件通道已关闭")
+                                    }
+                                }
+                            }
                             created.onMilestone = { reached, detail ->
-                                ConnectionDiagnostics.timeline.milestone(diagnosticAttempt, reached, detail)
+                                if (ownsConnection() && currentClient === created) {
+                                    ConnectionDiagnostics.timeline.milestone(diagnosticAttempt, reached, detail)
+                                }
                             }
                             // 车机媒体键（iAP2 0x6802 通路）：方向盘/面板的上一曲、下一曲。
                             // 放在这里而不是调用点，保证重连重建 client 时也挂得上。
-                            created.onMediaKey = { keyCode -> routeCarMediaKey(keyCode, "iAP2 0x6802") }
+                            created.onMediaKey = { keyCode ->
+                                if (ownsConnection() && currentClient === created) routeCarMediaKey(keyCode, "iAP2 0x6802")
+                            }
                             // 旋钮/四向拨杆（iAP2 0x6802 通路）：注入虚拟屏的 DPAD
-                            created.onNavKey = { keyCode -> injectNavigationKey(keyCode) }
+                            created.onNavKey = { keyCode ->
+                                if (ownsConnection() && currentClient === created) injectNavigationKey(keyCode)
+                            }
                             // MIB3 控制会话完成 → modesChanged 资源重申 burst（082446 定谳：
                             // 只在会话早期声明过一次的话，第二控制会话把车机资源仲裁重置，
                             // 车机全程健康却永不切 CarPlay 画面）。
@@ -3473,7 +3633,7 @@ object SessionController {
                                 scheduleModesReclaim(created)
                             }
                         }
-                    if (ownsConnection()) retireSession()
+                    synchronized(this) { if (ownsConnection()) retireSession() }
                     // 会话静默降噪（2026-10-10）：从交接点起暂停其它接收端的出站连接探测
                     // （典型：连着 DiPlay 测试台时不再噪音式探测 Audi）。会话结束/断开时解除。
                     BtSessionGate.sessionActive = true
@@ -3485,7 +3645,11 @@ object SessionController {
                         client.close()
                         return@run
                     }
-                    currentClient = client
+                    if (!installClient(client, generation)) {
+                        client.close()
+                        return@run
+                    }
+                    prepareCarLifeSource(context)
                     drainPendingEndpoint(client)
                     val compatibility = ReceiverCompatibility.describe(client.receiverCompatibility())
                     appendLog(compatibility)
@@ -3505,7 +3669,7 @@ object SessionController {
                             client.runPairing()
                         }
                     if (wasCancelled()) {
-                        if (ownsConnection()) retireSession()
+                        synchronized(this) { if (ownsConnection()) retireSession() }
                         appendLog("AIRPLAY: 用户已取消——中止配对")
                         if (ownsConnection()) sessionStarting.set(false)
                         return@run
@@ -3539,11 +3703,15 @@ object SessionController {
                             client.close()
                             return@run
                         }
-                        currentClient = client
+                        if (!installClient(client, generation)) {
+                            client.close()
+                            return@run
+                        }
+                        prepareCarLifeSource(context)
                         drainPendingEndpoint(client)
                         keys = client.runPairing()
                         if (wasCancelled()) {
-                            if (ownsConnection()) retireSession()
+                            synchronized(this) { if (ownsConnection()) retireSession() }
                             appendLog("AIRPLAY: 用户已取消——中止配对")
                             if (ownsConnection()) sessionStarting.set(false)
                             return@run
@@ -3946,54 +4114,24 @@ object SessionController {
                                                         }
                                                     }
                                                 },
-                                                onEnded = onVideoEnded@{
-                                                    if (videoSender !== sender) return@onVideoEnded
-                                                    appendLog(
-                                                        "SESSION: 本轮车机交互统计 forceKeyFrame=$forceKeyFrameCount requestUI=$requestUiCount " +
-                                                            "触摸报文=$touchLogCount 媒体键释放=$consumerReleaseCount",
-                                                    )
-                                                    lastEnvironmentSampleAt = 0L
-                                                    ConnectionDiagnostics.timeline.videoEnded(diagnosticAttempt)
-                                                    ReceiverDetectionRuntime.mediaEnded(client.currentEndpoint.observation)
-                                                    carLife?.let {
-                                                        it.stop()
-                                                        releaseCarLifeSession(it)
+                                                onEnded = {
+                                                    Bg.run("video-session-ended") {
+                                                        endClientSession(client, generation, diagnosticAttempt, "视频通道终止", sender)
                                                     }
-                                                    if (carLifeOutput?.sender === sender) carLifeOutput = null
-                                                    StreamingWifiLock.release()
-                                                    // 先于其余收尾：「息屏后多久结束」以推流终止时刻为准
-                                                    appContext?.let(ScreenLockMonitor::stop)
-                                                    nativeAudioBridge?.stop()
-                                                    nativeAudioBridge = null
-                                                    // 会话真实结束：解除静默降噪（客户端恢复探测/重连）
-                                                    appendLog(">>> CarPlay 会话结束（推流终止）——恢复蓝牙探测")
-                                                    // 只给一个短暂宽限：车机 ACL 已断（熄火）时到点即停，不整夜探测
-                                                    bluetoothClient?.armAfterSessionEnd()
-                                                    BtSessionGate.sessionActive = false
-                                                    // 车机掉线类结束（无用户断开操作）：暗幕/常亮必须一起收掉。
-                                                    // 这条路径不经过 retireSession（VirtualLauncher 仍挂着），
-                                                    // 漏掉它就会出现「会话早就断了、45s 后手机屏突然变黑」
-                                                    // （2026-10-19 用户实测）。
-                                                    ScreenDimmer.setSessionActive(false)
-                                                    // 车机侧断开：人在车外，让手机直接休眠（面板保持黑），
-                                                    // 而不是先点亮再等 60s 超时
-                                                    restorePhoneScreen(sleepIfCarSide = true)
-                                                    // shell 兜底存的系统网络也要在这里还原：车机拆链是
-                                                    // 最常见的离场方式（熄火），用户未必点「断开」——只挂
-                                                    // disconnect 一端必遗留（2026-10-23 审阅定谳）。下一轮
-                                                    // 若走深度兜底会重新登记，语义自洽。
-                                                    cleanupShellFallbackNetwork()
-                                                    // 音频拆链归因：起过音频却很快被拆 → 记下该档位
-                                                    // 不兼容，下次连接自动换档（见 attributeAudioTeardown）。
-                                                    attributeAudioTeardown()
                                                 },
                                             )
                                         return sender
                                     }
                                     sessionVideoSender = newScreenSender(screen)
-                                    videoSender = sessionVideoSender
+                                    if (!installVideoSender(client, generation, sessionVideoSender)) {
+                                        sessionVideoSender.stop()
+                                        return@run
+                                    }
                                     // 先连端口（车机看门狗），编码器等 RECORD 后再启动
-                                    videoSender?.openDataPort()
+                                    if (!sessionVideoSender.openDataPort()) {
+                                        endClientSession(client, generation, diagnosticAttempt, "视频数据口连接失败", sessionVideoSender)
+                                        return@run
+                                    }
                                     screenStreamRecovery = recover@{
                                         fun failure(): ScreenRecoveryResult =
                                             if (wasCancelled() || client.cancelled || currentClient !== client) {
@@ -4061,6 +4199,13 @@ object SessionController {
                                         }
                                     }
                                 }
+                                val startup =
+                                    client.configureStartup(
+                                        MercedesStartup
+                                            .mode(context),
+                                    )
+                                val audioBeforeRecord = startup.audioFirst && startAudioChannel(context, client, sessionKey, host)
+                                if (wasCancelled() || client.sessionStopping || currentClient !== client) return@run
                                 // 先 RECORD 激活会话并起视频，再协商音频（2026-10-17 奥迪定谳）：
                                 // 车机在「屏幕流 SETUP 之后」有约 2s 看门狗，等不到 RECORD/数据流即
                                 // 拆掉整轮会话。音频 SETUP 实测本身要 ~2.05-2.16s（车机侧音频通路
@@ -4080,6 +4225,7 @@ object SessionController {
                                     }
                                     return@run
                                 }
+                                if (wasCancelled() || client.sessionStopping || currentClient !== client) return@run
                                 ConnectionDiagnostics.timeline.stage(diagnosticAttempt, ConnectionStage.CARWITH)
                                 if (host != null) {
                                     val videoW = pendingVideoW
@@ -4087,29 +4233,16 @@ object SessionController {
                                     val output = CarLifeOutput(diagnosticAttempt, sessionVideoSender)
                                     // 按接收端屏幕比例请求，减少缩放/黑边；CarWith 不采纳时以其返回为准
                                     val createdCarLife =
-                                        newFormalCarLifeSession(
+                                        prepareCarLifeSource(
                                             context,
                                             CarLifeProtocol.videoRequestFor(setup.displayWidth, setup.displayHeight),
                                         )
                                     carLife = createdCarLife
-                                    val claimed = claimCarLifeSession(CarLifeSessionRegistry.Owner.FORMAL, createdCarLife)
-                                    val videoStarted = claimed && videoSender?.start {} == true
-                                    // 入网已完成，此时才拿低延迟锁（持锁会让入网所需的 Wi‑Fi 扫描失败）
-                                    if (videoStarted) StreamingWifiLock.acquire(context)
-                                    if (videoStarted) streamingDiagnosticAttempt = diagnosticAttempt
-                                    // 锁屏/息屏/Doze 迁移写进日志与时间线（锁屏退出的定位依据，只读不改状态）
-                                    if (videoStarted) {
-                                        ScreenLockMonitor.start(
-                                            context,
-                                            log = ::appendLog,
-                                            note = { ConnectionDiagnostics.timeline.note(diagnosticAttempt, it) },
-                                        )
-                                    }
-                                    if (videoStarted) carLifeOutput = output
-                                    // 在 CarWith 启动前布防：CarWith 可能在 start() 内就恢复媒体，
-                                    // 启动后再取 nowPlaying 会把自动播放误当成“连接前已在播放”。
-                                    if (videoStarted) armAutoPlaySuppression()
-                                    val carLifeStarted = videoStarted && createdCarLife.start()
+                                    val claimed = createdCarLife != null
+                                    val videoStarted =
+                                        createdCarLife != null &&
+                                            activateCarLifeVideo(context, client, generation, createdCarLife, output)
+                                    val carLifeStarted = videoStarted && createdCarLife?.isRunning == true
                                     appendLog(
                                         "MODE: CarWith ${if (carLifeStarted) "已请求连接，等待真实视频" else "连接请求失败"} " +
                                             "${videoW}x$videoH（等待 CarLife 首帧，不代表已完成握手）",
@@ -4124,20 +4257,24 @@ object SessionController {
                                         stopAutoPlayWatch()
                                         ConnectionDiagnostics.timeline.finish(diagnosticAttempt, DiagnosticCode.CARWITH_FAILED, true)
                                         if (carLifeOutput === output) carLifeOutput = null
-                                        releaseCarLifeSession(createdCarLife)
+                                        createdCarLife?.let { releaseCarLifeSession(it) }
                                     }
                                 }
                                 // 音频通道（可选）：SETUP type=100 → UDP RTP 推流。
                                 // 会话已激活（RECORD 完成）后再协商；失败不影响视频主链路。
                                 val audioStarted =
-                                    startAudioAndRecord(
-                                        context,
-                                        client,
-                                        sessionKey,
-                                        host,
-                                        // 奥迪曾需流后补发；受影响车机由客户端策略跳过重复 RECORD。
-                                        "AUDIO: 音频流已加入——检查会话激活",
-                                    )
+                                    audioBeforeRecord ||
+                                        (
+                                            !startup.audioFirst &&
+                                                startAudioAndRecord(
+                                                    context,
+                                                    client,
+                                                    sessionKey,
+                                                    host,
+                                                    // 奥迪曾需流后补发；受影响车机由客户端策略跳过重复 RECORD。
+                                                    "AUDIO: 音频流已加入——检查会话激活",
+                                                )
+                                        )
                                 // 主音频被车机约束占用时的“未启动”不是音频故障：不写结论码，
                                 // 否则它会长期盖住后续真正需要的诊断（如屏幕暂停）。
                                 if (audioEnabledForSession &&
@@ -4171,8 +4308,12 @@ object SessionController {
                     // 否则 BT-C 会永久停在门闸外、连真车路径失效。
                     // 推流活跃时保持关闭，由 VideoSender.onEnded（推流终止）负责解除。
                     if (ownsConnection() && videoSender?.isRunning != true) {
-                        ConnectionDiagnostics.timeline.abandon(diagnosticAttempt, wasCancelled())
-                        BtSessionGate.sessionActive = false
+                        synchronized(this) {
+                            if (!ownsConnection()) return@run
+                            ConnectionDiagnostics.timeline.abandon(diagnosticAttempt, wasCancelled())
+                            retireSession()
+                            BtSessionGate.sessionActive = false
+                        }
                         // 收尾竞态：晚到 0x4301 若恰好在「配对已失败、互斥尚未释放」的
                         // 窗口内到达，会被暂存但没人消费。此处补投一次——车机等 15s
                         // 无人连入就拆链，错过这一投就是整轮失败（2026-10-18 分析）。
