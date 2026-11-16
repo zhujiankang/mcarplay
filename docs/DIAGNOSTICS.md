@@ -1,5 +1,15 @@
 # Connection Diagnostics
 
+## 0.1.14：奔驰屏幕申请与输入失败隔离
+
+- `SCREEN: 奔驰取回主屏 fromRequestUi=... acquired=...`：新邀请或明确requestUI触发申请；true表示该发布被确认且事件版本仍有效，不证明用户可见画面。
+- `SCREEN: 奔驰新邀请未解除主屏借用/高约束`：邀请不能抢倒车借屏或高约束画面，不周期强制取回。
+- `MIC: setupAccepted=... rtspStatus=... protocolStatus=... controlPortDeclared=...`：输入流网络/协议结果；不含音频内容。旧报告的false没有具体拒绝码，不能从中反推400/格式错误。
+- `MIC: input SETUP not accepted; no TEARDOWN for uncreated stream`：被拒输入仅关闭本机端口与临时状态；不是麦克风已经工作。
+- `MIC: no authenticated input before deadline`：已接受输入仍无认证包，停止该输入，保留视频/控制。
+
+区分语音键写入、SETUP确认、认证包、CarLife写入与实际识别；区分用户手动TEARDOWN与自动断线。详见 [0.1.14说明](MERCEDES-CARLIFE-0.1.14.md)。
+
 ## 0.1.13：仪表媒体证据链
 
 `MEDIA-BRIDGE` 新增状态日志，不含歌名、歌手、歌词、图片、内容哈希或URI：

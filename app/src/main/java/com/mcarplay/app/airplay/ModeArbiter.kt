@@ -26,7 +26,7 @@ internal class ModeArbiter {
         ACCESSORY(2L),
     }
 
-    private class Resource(
+    private data class Resource(
         var owner: Entity = Entity.CONTROLLER,
         var permanent: Entity = Entity.CONTROLLER,
         var borrowed: Boolean = false,
@@ -39,6 +39,48 @@ internal class ModeArbiter {
     private var screenRelinquished = false
     private var audioClaimPending = false
     private var speechRecognition = false
+    private var revision = 0L
+
+    /** A fresh ctrl invitation is weaker than requestUI: never end a camera/PDC borrow for it. */
+    @get:Synchronized
+    val screenCanReturnOnInvite: Boolean get() {
+        val screen = resources.getValue(SCREEN)
+        return screen.owner == Entity.ACCESSORY && !screen.borrowed && screen.takeConstraint <= PRIORITY_USER_INITIATED
+    }
+
+    /** Publish a proposed ownership snapshot without blocking the event arbiter; commit only if still current. */
+    fun acquireScreen(
+        fromRequestUi: Boolean,
+        publish: (Map<String, Any?>) -> Boolean,
+    ): Boolean {
+        val expected: Long
+        val next: Resource
+        val announcement: Map<String, Any?>
+        synchronized(this) {
+            val current = resources.getValue(SCREEN)
+            if (!fromRequestUi && current.borrowed) return false
+            val constraint = if (current.borrowed) current.unborrowConstraint else current.takeConstraint
+            if (current.owner != Entity.CONTROLLER && constraint > PRIORITY_USER_INITIATED) return false
+            expected = revision
+            next =
+                current.copy(
+                    owner = Entity.CONTROLLER,
+                    permanent = Entity.CONTROLLER,
+                    borrowed = false,
+                    takeConstraint = CONSTRAINT_ANYTIME,
+                )
+            resources[SCREEN] = next
+            announcement = parameters()
+            resources[SCREEN] = current
+        }
+        if (!publish(announcement)) return false
+        synchronized(this) {
+            if (revision != expected) return false
+            resources[SCREEN] = next
+            revision++
+            return true
+        }
+    }
 
     @Synchronized
     fun setSpeechRecognition(active: Boolean) {
@@ -76,6 +118,7 @@ internal class ModeArbiter {
     /** 用户在车机上点了 CarPlay 图标：用户发起的拿回主屏。 */
     @Synchronized
     fun onUserRequestedUi(): UiRequest {
+        revision++
         val screen = resources.getValue(SCREEN)
         if (screen.owner == Entity.CONTROLLER) {
             return UiRequest("主屏本就归手机，先报让出再拿回", retake = true, rebuildStream = screenRelinquished)
@@ -147,6 +190,7 @@ internal class ModeArbiter {
      */
     @Synchronized
     fun onUserReturnedToCar(): String {
+        revision++
         for (resource in resources.values) {
             resource.owner = Entity.ACCESSORY
             resource.permanent = Entity.ACCESSORY
@@ -217,6 +261,7 @@ internal class ModeArbiter {
         container: Map<*, *>?,
         initial: Boolean,
     ): String {
+        revision++
         val requests = container?.get("resources") as? List<*> ?: return "无资源请求，保持 ${describe()}"
         for (entry in requests) {
             val request = entry as? Map<*, *> ?: continue

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — mercedes-carlife (0.1.14)
+
+Validation: standard 1009 + remote bridge 24 tests passed (0 failures/errors/skips); Spotless, lint (0 errors), standard debug APK build and same-certificate verification passed. Vehicle voice/recovery acceptance is pending.
+
+English: Reacquire the verified Mercedes screen on a fresh receiver invitation or explicit requestUI using a proposed modes snapshot committed after acknowledgement, with event-revision and connection-generation guards. Preserve borrow/high-priority ownership and the original screen socket/activation. Serialize mode publications, merge pending requests and request a fresh IDR after return. Add microphone control-port declaration, full RTSP target, rejection status logging and no-authenticated-input deadline; never teardown a rejected/uncreated input stream. End explicit recording when CarLife returns to wake-word monitoring. Vehicle recovery and ASR remain pending; independent packet105 ACK failures remain open.
+
+简体中文：已核对奔驰在新邀请/requestUI后按拟申请快照等待确认再提交主屏归属，检查事件版本与连接代数，保留借屏/高优先级约束和原屏幕连接/激活；串行资源发布、合并待执行请求，成功归还后请求新IDR。补麦克风控制端口、完整RTSP目标、拒绝状态和无认证包时限，禁止拆除被拒/未创建的输入流；CarLife回到唤醒词监听时结束显式录音。实车恢复和识别仍待验证，独立packet105确认失败仍未解决。
+
 ## Unreleased — mercedes-carlife (0.1.13)
 
 Validation: standard 1001 + remote bridge 24 tests passed (0 failures/errors/skips); Spotless, lint (0 errors), debug APK build and same-certificate verification passed. Vehicle media acceptance is pending.

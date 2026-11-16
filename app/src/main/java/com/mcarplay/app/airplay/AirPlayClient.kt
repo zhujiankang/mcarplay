@@ -898,15 +898,37 @@ class AirPlayClient(
     /** 本会话的资源仲裁状态：/info modes 初始化，事件通道的 changeModes / requestUI 更新。 */
     internal val modes = ModeArbiter()
 
+    private val modesPublicationLock = Any()
+
+    internal fun acquireScreenResource(
+        fromRequestUi: Boolean,
+        expectedEpoch: Long,
+    ): Boolean =
+        synchronized(modesPublicationLock) {
+            if (!isConnectionCurrent(expectedEpoch)) return@synchronized false
+            modes.acquireScreen(fromRequestUi) { proposed ->
+                publishModes(proposed, "申请主屏 fromRequestUi=$fromRequestUi", expectedEpoch) && isConnectionCurrent(expectedEpoch)
+            }
+        }
+
     fun assertModes(
         releaseScreen: Boolean = false,
         expectedEpoch: Long = connectionEpoch,
+    ): Boolean =
+        synchronized(modesPublicationLock) {
+            publishModes(modes.parameters(releaseScreen), if (releaseScreen) "让出主屏，随后拿回" else modes.describe(), expectedEpoch)
+        }
+
+    private fun publishModes(
+        parameters: Map<String, Any?>,
+        state: String,
+        expectedEpoch: Long,
     ): Boolean {
         val body =
             BinaryPlist.encode(
                 linkedMapOf(
                     "type" to "modesChanged",
-                    "params" to modes.parameters(releaseScreen),
+                    "params" to parameters,
                 ),
             )
         return try {
@@ -925,9 +947,9 @@ class AirPlayClient(
                     " 应答体 ${response.size}B " +
                         (runCatching { PlistShape.describe(BinaryPlist.parseRecovered(response).value) }.getOrNull() ?: "非 plist")
                 }
-            val state = if (releaseScreen) "让出主屏，随后拿回" else modes.describe()
             log("AIRPLAY: modesChanged（$state）[$statusLine]$responseShape")
-            statusLine.contains("200")
+            val protocolStatus = runCatching { (BinaryPlist.parse(response) as? Map<*, *>)?.get("status") as? Number }.getOrNull()?.toLong()
+            statusLine.split(' ').getOrNull(1) == "200" && (protocolStatus == null || protocolStatus == 0L)
         } catch (error: IOException) {
             log("AIRPLAY: modesChanged 失败 - ${error.message}")
             false
@@ -2344,20 +2366,27 @@ class AirPlayClient(
         connectionId: Long,
         localPort: Int,
         epoch: Long,
+        controlPort: Int? = null,
     ): Boolean {
         if (!isConnectionCurrent(epoch) || microphoneProfile() != profile) return false
-        val stream = microphoneDescription(profile, connectionId, localPort)
-        val (status, _) =
+        val stream = microphoneDescription(profile, connectionId, localPort, controlPort)
+        val host = activeHost ?: return false
+        val (status, response) =
             request(
                 "SETUP",
-                "/",
+                "rtsp://$host:${endpoint.airPlayPort}/",
                 BinaryPlist.encode(mapOf("streams" to listOf(stream))),
                 timeoutMillis = 5_000,
                 contentType = "application/x-apple-binary-plist",
                 expectedEpoch = epoch,
             )
-        val accepted = status.contains("200") && isConnectionCurrent(epoch)
-        log("MIC: setupAccepted=$accepted type=100 audioType=speechRecognition format=0x${profile.format.toString(16)}")
+        val protocolStatus = runCatching { (BinaryPlist.parse(response) as? Map<*, *>)?.get("status") as? Number }.getOrNull()?.toLong()
+        val accepted =
+            status.split(' ').getOrNull(1) == "200" && (protocolStatus == null || protocolStatus == 0L) && isConnectionCurrent(epoch)
+        log(
+            "MIC: setupAccepted=$accepted rtspStatus=${status.split(' ').getOrNull(1)} protocolStatus=$protocolStatus " +
+                "controlPortDeclared=${controlPort != null} type=100 audioType=speechRecognition format=0x${profile.format.toString(16)}",
+        )
         return accepted
     }
 
@@ -2366,11 +2395,12 @@ class AirPlayClient(
         epoch: Long,
     ): Boolean {
         if (!isConnectionCurrent(epoch)) return false
+        val host = activeHost ?: return false
         val stream = mapOf("type" to 100L, "streamConnectionID" to connectionId)
         val (status, _) =
             request(
                 "TEARDOWN",
-                "/",
+                "rtsp://$host:${endpoint.airPlayPort}/",
                 BinaryPlist.encode(mapOf("streams" to listOf(stream))),
                 timeoutMillis = 1_500,
                 contentType = "application/x-apple-binary-plist",
@@ -2401,19 +2431,21 @@ class AirPlayClient(
         profile: com.mcarplay.app.audio.MicrophoneProfile,
         connectionId: Long,
         localPort: Int,
+        controlPort: Int? = null,
     ): Map<String, Any?> {
         require(connectionId > 0 && localPort in 1..65535)
+        require(controlPort == null || controlPort in 1..65535)
         return linkedMapOf(
             "type" to 100L,
             "streamConnectionID" to connectionId,
             "audioType" to "speechRecognition",
             "audioFormat" to profile.format,
-            "audioLatencyMs" to 60L,
+            "audioLatencyMs" to 250L,
             "input" to true,
             "dataPort" to localPort.toLong(),
             "supportsRTPPacketRedundancy" to false,
             "supportsHighAccuracyTimestamps" to false,
-        )
+        ).apply { if (controlPort != null) put("controlPort", controlPort.toLong()) }
     }
 
     /**

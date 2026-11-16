@@ -104,3 +104,10 @@ formal-source generations and privacy controls. The CarLife media field layout
 was checked against the Apache-2.0 Baidu CarLife protobuf definition in
 [milesking/apollo-DuerOS](https://github.com/milesking/apollo-DuerOS/blob/6a07419818f46aadda34c5f55e63d4a1fc8136ef/CarLife-Vehicle-Lib/LibSource/protobuf/proto/CarlifeMediaInfoProto.proto);
 no generated code, SDK, reference APK or OEM component is bundled.
+
+The 0.1.14 recovery work compares the same pinned CarPToCarL version's
+`AirPlayResourceState.claimAndPublish`, `CarPlayResourceStreams.requestScreen`
+and microphone input probe. It adapts ownership commit-after-acknowledgement
+with mcarplay's event revisions and connection guards, while retaining the
+Mercedes screen socket/activation policy. The reference probe is not evidence
+of vehicle microphone recognition. Existing MIT copyright notices remain.

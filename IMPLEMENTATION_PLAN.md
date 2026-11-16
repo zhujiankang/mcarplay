@@ -6,6 +6,8 @@
 
 ## 当前基线与结论
 
+- **11月16日奔驰语音/切屏恢复候选0.1.14-debug：** 新报告实际为0.1.12；长按写入CarLife已成功，但输入SETUP被拒且回传0。主屏TAKE后收到新的ctrl邀请被忽略，保持暂停；语音后第二轮视频仍继续写入，末尾为手动断开，不能统称自动掉线。采用CarPToCarL拟申请/确认/提交与并发事件保护，在新邀请/requestUI后按约束取回原连接；避免拆未创建麦克风流，补输入控制端口与拒绝码/无认证包退出。完整standard1009项、remote bridge24项及Spotless/lint/debug构建、同证书校验通过。详见 `docs/MERCEDES-CARLIFE-0.1.14.md`；实车语音/恢复、独立iAP2 ACK问题仍待验证。
+
 - **11 月 16 日仪表媒体候选 `0.1.13-debug`（`mercedes-carlife`）：** 此前切歌上行已接通，但 CarLife `0x10035` 媒体消息未解析，网络 NowPlaying 仅空态回复，缺少蓝牙订阅更新和封面文件传输。本版兼容直接/列表媒体消息，增加正式会话隔离、可选系统媒体会话回退、后台有界JPEG及双iAP2订阅；按奔驰会话表选择文件2、EA3，封面等待START后分块并记录SUCCESS。默认关闭的歌词标题替换仅使用匹配且新鲜的源端歌词，不代表原生歌词窗口。队列有界，ACK停顿暂停新媒体，但已发送链路序号保留正常重试/失败规则。完整standard1001项、remote bridge24项（均无失败/错误/跳过）、Spotless、lint和debug构建、同证书校验通过。验收与新诊断见 `docs/MERCEDES-CARLIFE-0.1.13.md`；本版尚无实车显示证据。
 
 - **11 月 16 日奔驰接管屏幕/语音候选 `0.1.12-debug`（`mercedes-carlife`）：** 0.1.11 最新实测在奔驰借屏归还后重新 SETUP/RECORD，约129ms后车机关闭视频和事件通道；推流开始已电池豁免，无该窗口EPERM证据。修复标准 siriAction 字段解析；已核对奔驰改为保留原视频连接，按归属门控图像并等待新IDR，原车主页切换同样保留；其他车机保持既有策略。小爱图标可拉起不等于麦克风识别已验证，方向盘短按可能仍分配原车语音。完整standard980项、remote bridge24项及Spotless/lint/debug构建、同证书校验通过。见 `docs/MERCEDES-CARLIFE-0.1.12.md`，新包实车验收待完成。

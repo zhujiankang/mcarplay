@@ -1090,7 +1090,8 @@ object SessionController {
                 onMediaInfo = { info -> if (currentCarLifeSession === session) metadataRelay.media(session, info) },
                 onMicrophoneRequest = onMicrophoneRequest@{ request ->
                     if (currentCarLifeSession !== session) return@onMicrophoneRequest
-                    if (request == 0) microphoneBridge.stop(session)
+                    // Returning to wake-word monitoring ends the preceding explicit recording too.
+                    if (request == 0 || request == 1) microphoneBridge.stop(session)
                     if (request == 2) {
                         val client = currentClient ?: return@onMicrophoneRequest
                         val secret = currentSharedSecret ?: return@onMicrophoneRequest
@@ -3297,6 +3298,10 @@ object SessionController {
         val client = currentClient ?: return
         val streaming = !connectCancelled && !sessionStarting.get() && videoSender?.isRunning == true
         if (!streaming) return
+        if (client.isMercedesReceiver() && !client.modes.phoneOwnsScreen) {
+            enqueueMercedesScreenReturn(client, fromRequestUi = false)
+            return
+        }
         val now = android.os.SystemClock.uptimeMillis()
         val decision =
             synchronized(inviteReconnectLock) {
@@ -3323,6 +3328,48 @@ object SessionController {
     }
 
     private val inviteReconnectLock = Any()
+
+    private class ScreenReturnAction(
+        val client: AirPlayClient,
+        val epoch: Long,
+        var explicitUi: Boolean,
+    )
+
+    private var pendingScreenReturn: ScreenReturnAction? = null
+
+    /** Same control worker as changeModes. A car invitation requests ownership, never a blind session rebuild. */
+    private fun enqueueMercedesScreenReturn(
+        client: AirPlayClient,
+        fromRequestUi: Boolean,
+    ) {
+        val epoch = client.connectionGeneration
+        val action =
+            synchronized(modesActionLock) {
+                pendingScreenReturn?.takeIf { it.client === client && it.epoch == epoch }?.let {
+                    it.explicitUi = it.explicitUi || fromRequestUi
+                    return
+                }
+                ScreenReturnAction(client, epoch, fromRequestUi).also { pendingScreenReturn = it }
+            }
+        controlActions.execute {
+            val explicitUi =
+                synchronized(modesActionLock) {
+                    if (pendingScreenReturn === action) pendingScreenReturn = null
+                    action.explicitUi
+                }
+            if (connectCancelled || currentClient !== client || !client.isConnectionCurrent(epoch)) return@execute
+            if (!explicitUi && !client.modes.screenCanReturnOnInvite) {
+                appendLog("SCREEN: 奔驰新邀请未解除主屏借用/高约束，保持原车画面")
+                return@execute
+            }
+            val acquired = client.acquireScreenResource(explicitUi, epoch)
+            appendLog("SCREEN: 奔驰取回主屏 fromRequestUi=$explicitUi acquired=$acquired ${client.modes.describe()}")
+            if (!acquired || connectCancelled || currentClient !== client || !client.isConnectionCurrent(epoch)) return@execute
+            if (screenResourceStreams?.reconcile() == false || !client.modes.phoneOwnsScreen) return@execute
+            videoSender?.reprimeOnNextKeyFrame()
+            videoSender?.requestKeyFrame(fromReceiver = false)
+        }
+    }
 
     private fun reconnectOnStreamingInvite(client: AirPlayClient) {
         val endpoint = client.currentEndpoint
@@ -4068,6 +4115,11 @@ object SessionController {
                                     }
 
                                     "requestUI" -> {
+                                        if (client.isMercedesReceiver()) {
+                                            requestUiCount++
+                                            enqueueMercedesScreenReturn(client, fromRequestUi = true)
+                                            return@onEvent
+                                        }
                                         // 用户在原生菜单点 CarPlay 图标（帕萨特 2025 / VW4211 实测：每点一次一条，
                                         // 无 params）。事件层已回 RTSP 200，但旧实现不做业务处理（不回 modesChanged），
                                         // 车机始终停在原生界面。与 changeModes 同样回 modesChanged 接管主屏，

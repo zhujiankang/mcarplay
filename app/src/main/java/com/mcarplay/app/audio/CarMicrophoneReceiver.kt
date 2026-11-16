@@ -19,9 +19,16 @@ internal class CarMicrophoneReceiver(
             receiveBufferSize = 128 * 1024
         }
     val localPort: Int get() = socket.localPort
+    private val controlSocket =
+        runCatching { DatagramSocket(0) }.getOrElse {
+            socket.close()
+            throw it
+        }
+    val controlPort: Int get() = controlSocket.localPort
     private val received = AtomicLong()
     private val decoded = AtomicLong()
     private val delivered = AtomicLong()
+    val authenticatedPackets: Long get() = decoded.get()
 
     @Volatile private var closed = false
 
@@ -58,6 +65,7 @@ internal class CarMicrophoneReceiver(
                 if (!closed) log("MIC: input receiver stopped unexpectedly")
             } finally {
                 socket.close()
+                controlSocket.close()
                 summary()
                 key.fill(0)
             }
@@ -69,5 +77,6 @@ internal class CarMicrophoneReceiver(
     override fun close() {
         closed = true
         socket.close()
+        controlSocket.close()
     }
 }

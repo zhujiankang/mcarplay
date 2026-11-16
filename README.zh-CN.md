@@ -1,5 +1,7 @@
 # mcarplay
 
+> `0.1.14-debug` 在奔驰新邀请/requestUI后按确认结果取回主屏，保留倒车借屏约束；修复麦克风SETUP被拒后仍拆流，补输入端口、拒绝码与无包清理。延续0.1.13媒体改动，实车恢复和语音识别仍待确认，独立虚拟iAP2 ACK异常尚未解决。见[分析与测试说明](docs/MERCEDES-CARLIFE-0.1.14.md)。
+
 > `mercedes-carlife` 的 `0.1.13-debug` 接通 CarLife 歌曲信息、实际 iAP2 正在播放订阅和协商出的封面文件通道。歌词提供默认关闭的标题替换实验，不是原生歌词窗口。保留此前奔驰屏幕/语音修复，封面可见性和歌词刷新仍待实车验证；见[分析与测试说明](docs/MERCEDES-CARLIFE-0.1.13.md)。
 
 > `mercedes-carlife` 的 `0.1.12-debug` 修复漏读 `params.siriAction` 的语音事件，对已核对 Mercedes-Benz/MB_D-M-5 身份在原车/倒车接管期间保留原视频连接；按主屏归属暂停图像，归还后从新 IDR 恢复，切换不触发再次 SETUP/RECORD。短按分配、实际麦克风识别和新包实车验收仍待确认，独立 iAP2/网络问题仍未解决。见[分析与测试说明](docs/MERCEDES-CARLIFE-0.1.12.md)。

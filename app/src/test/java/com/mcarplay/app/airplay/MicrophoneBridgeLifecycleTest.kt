@@ -53,6 +53,80 @@ class MicrophoneBridgeLifecycleTest {
         }
     }
 
+    @Test fun rejectedInputNeverTeardownsAnUnknownStreamAndLeavesControlResponsive() {
+        AirPlayRecordLifecycleTest.Peer().use { peer ->
+            val client = client(peer)
+            val source = source()
+            val bridge = CarLifeMicrophoneBridge({})
+            peer.reply = { it.respond(if (it.method == "SETUP") 400 else 200) }
+            try {
+                bridge.request(client, source, ByteArray(32), 102)
+                assertEquals("POST", peer.next()!!.method)
+                val setup = peer.next()!!
+                assertEquals("SETUP", setup.method)
+                assertTrue(setup.path.startsWith("rtsp://127.0.0.1:"))
+                val stream = ((BinaryPlist.parse(setup.body) as Map<*, *>)["streams"] as List<*>).single() as Map<*, *>
+                val data = (stream["dataPort"] as Number).toInt()
+                val control = (stream["controlPort"] as Number).toInt()
+                assertTrue(data in 1..65535 && control in 1..65535 && data != control)
+                assertEquals("POST", peer.next()!!.method) // clear speech state, no unknown-stream TEARDOWN
+                assertNull(peer.next(100))
+                assertTrue(client.assertModes())
+                assertEquals("POST", peer.next()!!.method)
+                assertTrue(source.isRunning)
+                assertFalse(source.offerMicrophone(ByteArray(640)))
+            } finally {
+                bridge.stop()
+                source.stop()
+                client.close()
+            }
+        }
+    }
+
+    @Test fun acceptedInputWithoutAuthenticatedPacketsIsStoppedWithoutRepeatingRecord() {
+        AirPlayRecordLifecycleTest.Peer().use { peer ->
+            val client = client(peer)
+            val source = source()
+            val bridge = CarLifeMicrophoneBridge({}, firstPacketTimeoutMs = 100)
+            try {
+                bridge.request(client, source, ByteArray(32), 102)
+                assertEquals("POST", peer.next()!!.method)
+                assertEquals("SETUP", peer.next()!!.method)
+                assertEquals("TEARDOWN", peer.next()!!.method)
+                assertEquals("POST", peer.next()!!.method)
+                assertFalse(source.offerMicrophone(ByteArray(640)))
+                assertNull(peer.next(100))
+                assertTrue(source.isRunning)
+            } finally {
+                bridge.stop()
+                source.stop()
+                client.close()
+            }
+        }
+    }
+
+    @Test fun plistErrorInsideSuccessfulRtspIsNotAnAcceptedMicrophoneStream() {
+        AirPlayRecordLifecycleTest.Peer().use { peer ->
+            val client = client(peer)
+            peer.reply = { it.respond(200, BinaryPlist.encode(mapOf("status" to -50L))) }
+            try {
+                assertFalse(
+                    client.setupMicrophone(
+                        com.mcarplay.app.audio
+                            .MicrophoneProfile(0x40, 24000),
+                        123,
+                        23456,
+                        client.connectionGeneration,
+                        23457,
+                    ),
+                )
+                assertEquals("SETUP", peer.next()!!.method)
+            } finally {
+                client.close()
+            }
+        }
+    }
+
     private fun source(socket: Socket? = null): CarLifeSession {
         val source = CarLifeSession(Application(), onAccessUnit = {}, onEnded = {}, log = {})
 

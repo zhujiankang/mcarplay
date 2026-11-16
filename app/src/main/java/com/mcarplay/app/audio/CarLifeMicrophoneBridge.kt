@@ -11,6 +11,7 @@ import java.util.concurrent.TimeUnit
 internal class CarLifeMicrophoneBridge(
     private val log: (String) -> Unit,
     private val recognitionTimeoutMs: Long = 30_000,
+    private val firstPacketTimeoutMs: Long = 3_000,
 ) {
     private val worker =
         Executors.newSingleThreadExecutor { runnable ->
@@ -30,7 +31,10 @@ internal class CarLifeMicrophoneBridge(
         @Volatile var receiver: CarMicrophoneReceiver? = null
 
         @Volatile var cancelled = false
+
+        @Volatile var setupAccepted = false
         var timeout: java.util.concurrent.ScheduledFuture<*>? = null
+        var inputTimeout: java.util.concurrent.ScheduledFuture<*>? = null
         val cleaned =
             java.util.concurrent.atomic
                 .AtomicBoolean(false)
@@ -74,11 +78,19 @@ internal class CarLifeMicrophoneBridge(
                 }
                 if (!client.setSpeechRecognitionState(true, lease.epoch)) return@execute
                 if (!client.assertModes(expectedEpoch = lease.epoch) || !valid(lease)) return@execute
-                if (!client.setupMicrophone(profile, lease.id, receiver.localPort, lease.epoch)) return@execute
+                lease.setupAccepted = client.setupMicrophone(profile, lease.id, receiver.localPort, lease.epoch, receiver.controlPort)
+                if (!lease.setupAccepted) return@execute
                 if (!valid(lease)) return@execute
                 // Reuse the session's activation guard. Never repeat a Mercedes RECORD after startup.
                 if (!client.record(timeoutMillis = 3_000, expectedEpoch = lease.epoch) || !valid(lease)) return@execute
                 receiver.start(client.microphoneKey(privateSecret, lease.id), profile.sampleRate)
+                lease.inputTimeout =
+                    watchdog.schedule({
+                        if (valid(lease) && receiver.authenticatedPackets == 0L) {
+                            log("MIC: no authenticated input before deadline; stop input, preserve video/control")
+                            cancel(lease)
+                        }
+                    }, firstPacketTimeoutMs, TimeUnit.MILLISECONDS)
                 log("MIC: input started rate=${profile.sampleRate} targetRate=16000; awaiting authenticated packets")
                 started = true
             } catch (_: Exception) {
@@ -106,6 +118,7 @@ internal class CarLifeMicrophoneBridge(
         active = null
         lease.cancelled = true
         lease.timeout?.cancel(false)
+        lease.inputTimeout?.cancel(false)
         lease.source.endMicrophone()
         lease.receiver?.close()
         lease.client.setSpeechRecognitionState(false, lease.epoch)
@@ -124,7 +137,12 @@ internal class CarLifeMicrophoneBridge(
     private fun cleanup(lease: Lease) {
         if (!lease.cleaned.compareAndSet(false, true)) return
         lease.receiver?.close()
-        runCatching { lease.client.teardownMicrophone(lease.id, lease.epoch) }
+        // A rejected SETUP never created a stream. Some receivers treat an unknown type100 teardown broadly.
+        if (lease.setupAccepted) {
+            runCatching { lease.client.teardownMicrophone(lease.id, lease.epoch) }
+        } else {
+            log("MIC: input SETUP not accepted; no TEARDOWN for uncreated stream")
+        }
         if (lease.client.setSpeechRecognitionState(false, lease.epoch)) {
             runCatching { lease.client.assertModes(expectedEpoch = lease.epoch) }
         }
