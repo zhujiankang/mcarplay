@@ -653,7 +653,21 @@ class Iap2LinkEngine(
             onOptionalPacketStalled?.invoke()
         }
         if (next.retransmissions > maxRetransmissions) {
-            die("packet ${next.sequence} not acknowledged")
+            val body = next.payload
+            val message =
+                if ((next.sessionId == null || next.sessionId == controlSessionId()) &&
+                    body.size >= 6 &&
+                    body[0] == 0x40.toByte() &&
+                    body[1] == 0x40.toByte()
+                ) {
+                    "0x%04x".format(((body[4].toInt() and 255) shl 8) or (body[5].toInt() and 255))
+                } else {
+                    "none"
+                }
+            die(
+                "packet ${next.sequence} not acknowledged session=${next.sessionId ?: controlSessionId()} " +
+                    "csm=$message bytes=${body.size} retries=${next.retransmissions} lastAck=$lastSentAcknowledged",
+            )
             return
         }
         writePacket(next.payload, next.sequence, CONTROL_ACKNOWLEDGEMENT, next.sessionId ?: controlSessionId())

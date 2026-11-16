@@ -4440,14 +4440,17 @@ object SessionController {
                                             return ScreenResourceStreams(
                                                 isCurrent = ::isCurrent,
                                                 phoneOwnsScreen = { client.modes.phoneOwnsScreen },
-                                                retainScreenStream = { client.isMercedesReceiver() },
+                                                retainScreenStream = {
+                                                    client.isMercedesReceiver() &&
+                                                        client.modes.screenPermanentlyOwnedByPhone
+                                                },
                                                 onRetainedScreenVisibility = retained@{ visible ->
                                                     if (!isCurrent()) return@retained
                                                     if (!visible) {
                                                         source.releaseTouch()
                                                         videoSender?.pauseScreenOutput()
                                                         ConnectionDiagnostics.timeline.screenOutput(diagnosticAttempt, true)
-                                                        appendLog("SCREEN: 奔驰接管主屏——保留视频连接与激活，仅暂停图像；音频和控制继续")
+                                                        appendLog("SCREEN: 奔驰临时借屏——保留视频连接与激活，暂停图像；音频和控制继续")
                                                     } else {
                                                         client.modes.onScreenStreamRestored()
                                                         videoSender?.reprimeOnNextKeyFrame()
@@ -4467,7 +4470,7 @@ object SessionController {
                                                         }
                                                     source.releaseTouch()
                                                     ConnectionDiagnostics.timeline.screenOutput(diagnosticAttempt, true)
-                                                    appendLog("SCREEN: 让出主屏——退役屏幕流，保留 CarWith、音频与控制会话")
+                                                    appendLog("SCREEN: 主屏永久让出——退役屏幕流，保留 CarWith、音频与控制会话")
                                                     previous?.stop()
                                                     isCurrent() && client.teardownScreenStream()
                                                 },

@@ -29,6 +29,20 @@ class ResourceLoanTest {
         )
     }
 
+    @Test fun temporaryBorrowAndPermanentHomeTakeHaveDifferentRetentionLifecycles() {
+        val modes = ModeArbiter()
+        assertTrue(modes.screenPermanentlyOwnedByPhone)
+        change(modes, 3, "camera")
+        assertTrue(modes.screenPermanentlyOwnedByPhone)
+        change(modes, 1)
+        assertFalse(modes.screenPermanentlyOwnedByPhone)
+        change(modes, 2)
+        assertTrue(modes.screenPermanentlyOwnedByPhone)
+        assertFalse(modes.phoneOwnsScreen) // camera loan still exists after permanent ownership returns
+        change(modes, 4, "camera")
+        assertTrue(modes.phoneOwnsScreen)
+    }
+
     @Test fun repeatedBorrowCanTightenConstraintsWithoutAddingAnotherLoan() {
         val modes = ModeArbiter()
         change(modes, 3, "camera", 100)

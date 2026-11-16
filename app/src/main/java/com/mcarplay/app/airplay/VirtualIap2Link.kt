@@ -433,15 +433,21 @@ class VirtualIap2Link(
     }
 
     /**
-     * 下一档 MFi 挑战（顺序=按车机记忆重排，冷启动基线 20B 优先——Frida 真机值）。
+     * 下一档 MFi 挑战（按车机记忆重排，默认 20B 优先，EC 公钥提示时 32B 优先）。
      * 全部档位无应答时与蓝牙路径同语义：跳过校验直接 0xAA05，由车机后续行为判定。
      */
+    private var mfiEcdsa = false
+
     private fun startNextMfiChallengeLocked() {
         val identity = mfiIdentity ?: return
         if (mfiOrder.isEmpty()) {
             mfiMemory = MfiLengthMemory.load(mfiContext, identity)
             val pinned = pinnedMfiLength
-            mfiOrder = if (pinned != null) listOf(pinned) else MfiLengthMemory.orderAttempts(TUNNEL_MFI_BASELINE, mfiMemory)
+            mfiOrder =
+                when (pinned) {
+                    null -> MfiLengthMemory.orderAttempts(if (mfiEcdsa) listOf(32, 20, 16) else TUNNEL_MFI_BASELINE, mfiMemory)
+                    else -> listOf(pinned)
+                }
             if (pinned != null) {
                 log("IAPLINK: 隧道 MFi 固定 ${pinned}B（接收端策略）——只发一次，窗口 ${PINNED_MFI_WINDOW_MS}ms")
             } else if (!mfiMemory.isEmpty) {
@@ -613,7 +619,14 @@ class VirtualIap2Link(
 
             ids.MFI_CERTIFICATE -> {
                 if (mib3) {
-                    // 长度按车机记忆（冷启动 20B 优先，Frida 真机值；详见 startNextMfiChallengeLocked）
+                    val certificate = Iap2Csm.parseParams(frame.body).firstOrNull { it.id == 0 && it.value.isNotEmpty() }?.value
+                    if (certificate == null) {
+                        log("IAPLINK: empty certificate ignored; no challenge or authentication success inferred")
+                        return
+                    }
+                    if (mib3AuthStage == 3 || mfiFinished) return
+                    mfiEcdsa = containsEcdsaPublicKeyOid(certificate)
+                    log("IAPLINK: certificateBytes=${certificate.size} ecPublicKeyHint=$mfiEcdsa (not certificate verification)")
                     startNextMfiChallengeLocked()
                 } else {
                     // DiPlay CARLINKIT 身份只接受精确 32B（长度不符直接断链）
@@ -895,7 +908,13 @@ class VirtualIap2Link(
     }
 
     companion object {
-        /** 隧道 MFi 冷启动基线（Frida 真机 20B 优先；顺序会被按车机记忆重排）。 */
+        // CarPToCarL 1.2.51: id-ecPublicKey DER hint selects challenge length, not trust/validity.
+        internal fun containsEcdsaPublicKeyOid(bytes: ByteArray): Boolean {
+            val oid = byteArrayOf(6, 7, 0x2a, 0x86.toByte(), 0x48, 0xce.toByte(), 0x3d, 2, 1)
+            return (0..bytes.size - oid.size).any { start -> oid.indices.all { bytes[start + it] == oid[it] } }
+        }
+
+        /** 隧道 MFi 冷启动基线（非 EC 提示时 20B 优先；顺序会被按车机记忆重排）。 */
         val TUNNEL_MFI_BASELINE = listOf(20, 32, 16)
         val TUNNEL_MFI_WINDOWS = mapOf(20 to 6_000L, 32 to 3_000L, 16 to 3_000L)
         const val TUNNEL_MFI_SILENT_WINDOW_MS = 1_500L

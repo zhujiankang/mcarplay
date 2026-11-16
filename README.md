@@ -1,5 +1,7 @@
 # mcarplay
 
+> `0.1.16-debug` corrects Mercedes screen handling using new 0.1.14 vehicle evidence: temporary loans retain the stream, while permanent Home takeover retires only the screen and recreates it after acknowledged reacquisition. It adds virtual-iAP2 certificate input handling and safe ACK failure context. Microphone RTSP400, reduced source FPS and cluster artwork/lyrics remain unverified; see the [diagnosis and test guide (Chinese)](docs/MERCEDES-CARLIFE-0.1.16.md).
+
 > `0.1.15-debug` ports the CarPToCarL resource-request model to main screen/audio: acknowledged ownership commits, multiple car loans, on-demand media priority, temporary prompt borrowing/return and serialized stream management. The Mercedes screen socket/activation policy is retained. Vehicle acceptance remains pending; see the [port and test guide (Chinese)](docs/MERCEDES-CARLIFE-0.1.15.md).
 
 > `0.1.14-debug` adds transactional Mercedes screen reacquisition on a fresh receiver invitation or requestUI, preserves camera/borrow constraints, and avoids tearing down microphone streams after rejected SETUP. Input ports, rejection diagnostics and no-input cleanup are improved. Existing 0.1.13 media changes remain. Vehicle recovery and voice recognition are pending; independent virtual-iAP2 ACK failures remain open. See the [diagnosis and test guide (Chinese)](docs/MERCEDES-CARLIFE-0.1.14.md).

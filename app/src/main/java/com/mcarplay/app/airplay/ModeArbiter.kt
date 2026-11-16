@@ -61,6 +61,9 @@ internal class ModeArbiter {
     private var revision = 0L
     private val audioTransfers = ArrayDeque<CarAudioTransfer>()
 
+    /** Temporary loans keep the phone's permanent screen ownership; native Home TAKE does not. */
+    @get:Synchronized val screenPermanentlyOwnedByPhone: Boolean get() = resources.getValue(SCREEN).permanent == Entity.CONTROLLER
+
     @get:Synchronized val phoneOwnsScreen: Boolean get() = resources.getValue(SCREEN).owner == Entity.CONTROLLER
 
     @get:Synchronized val phoneOwnsAudio: Boolean get() = resources.getValue(MAIN_AUDIO).owner == Entity.CONTROLLER

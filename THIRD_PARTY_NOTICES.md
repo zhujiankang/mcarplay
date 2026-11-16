@@ -118,3 +118,10 @@ It retains MIT attribution (Copyright (c) 2026 lizhihua) and integrates the
 resource model with native CarLife playback, descriptor-scoped output
 retirement, event/connection guards and the Mercedes persistent screen policy.
 No reference APK or proprietary OEM components are included.
+
+The 0.1.16 follow-up compares that same pinned CarPToCarL version's permanent
+versus temporary screen resource lifecycle and virtual-iAP2 certificate input
+handling (empty-certificate guard and EC public-key OID hint). mcarplay retains
+its connection/revision guards and scopes screen retirement to its accepted
+descriptor. The OID hint is not certificate verification or vehicle acceptance.
+Existing MIT attribution remains unchanged.

@@ -142,6 +142,30 @@ class VirtualIap2LinkTest {
                 }
     }
 
+    @Test fun emptyCertificateDoesNotStartChallengeAndEcHintPrefers32Bytes() {
+        val h = Harness()
+        h.link.setGeneration(ReceiverProfile.LinkGeneration.CLASSIC_MIB3)
+        h.link.armMib3()
+        h.car.start(0)
+        h.exchangeUntilNormal()
+        h.carSends(0x1D01, Iap2Csm.string(0, "Mercedes 016 empty certificate") + Iap2Csm.string(1, "MB_D-M-5"))
+        assertEquals(emptyList<Int>(), h.carSends(0xAA01))
+        assertEquals(emptyList<Int>(), h.challengeLengths())
+        val oid = byteArrayOf(6, 7, 0x2a, 0x86.toByte(), 0x48, 0xce.toByte(), 0x3d, 2, 1)
+        // Public-key type hint only; this fixture is not a certificate/trust validation test.
+        h.carSends(0xAA01, Iap2Csm.param(0, byteArrayOf(0x30, 0x10) + oid))
+        assertEquals(listOf(32), h.challengeLengths())
+        h.carSends(0xAA01, Iap2Csm.param(0, oid))
+        assertEquals(listOf(32), h.challengeLengths())
+    }
+
+    @Test fun ecPublicKeyHintRejectsTruncatedOrDifferentOid() {
+        val oid = byteArrayOf(6, 7, 0x2a, 0x86.toByte(), 0x48, 0xce.toByte(), 0x3d, 2, 1)
+        assertTrue(VirtualIap2Link.containsEcdsaPublicKeyOid(oid))
+        assertTrue(!VirtualIap2Link.containsEcdsaPublicKeyOid(oid.dropLast(1).toByteArray()))
+        assertTrue(!VirtualIap2Link.containsEcdsaPublicKeyOid(oid.copyOf().also { it[it.lastIndex] = 2 }))
+    }
+
     @Test
     fun singleDetectRepliesWithoutPrematureSynOrPeriodicRetransmission() {
         val h = Harness()

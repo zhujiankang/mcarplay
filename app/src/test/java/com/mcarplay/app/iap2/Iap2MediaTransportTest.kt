@@ -110,6 +110,19 @@ class Iap2MediaTransportTest {
         assertEquals(Iap2LinkEngine.State.DEAD, engine.state)
     }
 
+    @Test fun criticalAckFailureReportsMessageContextWithoutPayload() {
+        val engine = connected()
+        val secret = "private-auth-material"
+        val payload = Iap2Csm.encode(0xAA02, secret.toByteArray())
+        assertTrue(engine.sendControl(payload, 1))
+        engine.takeOutput()
+        for (time in listOf(4001L, 8001L, 12001L, 16001L, 20001L)) engine.advanceTime(time)
+        val reason = (engine.pollEvent() as Iap2LinkEngine.Event.Dead).reason.orEmpty()
+        assertTrue(reason.contains("session=1 csm=0xaa02 bytes=${payload.size} retries=5 lastAck=100"))
+        assertFalse(reason.contains(secret))
+        assertFalse(reason.contains(secret.toByteArray().joinToString("") { "%02x".format(it) }))
+    }
+
     @Test fun artworkQueueAndNegotiatedPacketLimitAreBoundedWithoutKillingTheLink() {
         val engine = connected(128)
         assertFalse(engine.sendFileTransfer(ByteArray(129), 1))

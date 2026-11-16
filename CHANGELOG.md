@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — mercedes-carlife (0.1.16)
+
+Validation: standard 1037 + remote bridge 24 tests passed (0 failures/errors/skips); Spotless, standard lint (0 errors), standard debug APK build and same-certificate verification passed. Vehicle acceptance is pending.
+
+English: Distinguish temporary Mercedes screen loans from permanent Home takeover. Retain the stream for temporary loans; retire only the accepted screen descriptor on permanent takeover and restore with a fresh activation after acknowledged ownership. Guard teardown against late connection results. Ignore empty virtual-iAP2 certificates, prefer 32-byte challenges for an EC public-key hint subject to existing policy/memory, and add payload-free ACK failure context. Actual microphone RTSP400, reduced CarWith source FPS, independent ACK failures and cluster artwork/lyrics remain open.
+
+简体中文：区分奔驰临时借屏与永久回主页；前者复用原流，后者仅退役已成功建立的屏幕描述符，确认取得主屏后新激活恢复，隔离迟到拆流结果。网络虚拟iAP2忽略空证书、在既有策略/记忆允许时按EC公钥提示优先32字节挑战，增加不含正文的ACK失败上下文。实际麦克风RTSP400、CarWith源端降帧、独立ACK故障及仪表封面/歌词仍待解决。
+
 ## Unreleased — mercedes-carlife (0.1.15)
 
 Validation: standard 1033 + remote bridge 24 tests passed (0 failures/errors/skips); Spotless, standard lint (0 errors), standard debug APK build and same-certificate verification passed. Vehicle resource/audio/voice acceptance is pending.

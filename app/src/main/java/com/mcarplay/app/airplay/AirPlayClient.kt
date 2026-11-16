@@ -235,6 +235,7 @@ class AirPlayClient(
 
     @Volatile
     private var screenStreamUuid: String? = null
+    private var screenStreamConnectionId: Long? = null
 
     @Volatile
     private var networkIapAuthenticated = false
@@ -698,11 +699,12 @@ class AirPlayClient(
 
     fun close() {
         sessionSetupAccepted = false
-        screenStreamUuid = null
         val closing =
             synchronized(this) {
                 closingConnections++
                 connectionEpoch++
+                screenStreamUuid = null
+                screenStreamConnectionId = null
                 outputAudioStreams.clear()
                 sessionStopping = true
                 recordAttempt?.complete(false)
@@ -2827,6 +2829,7 @@ class AirPlayClient(
         synchronized(this) {
             if (!isConnectionCurrent(epoch)) return null
             screenStreamUuid = streamUuid
+            screenStreamConnectionId = connectionId
             screenActivationGeneration++
             recordAttempt?.complete(false)
             recordAttempt = null
@@ -2837,10 +2840,22 @@ class AirPlayClient(
     }
 
     fun teardownScreenStream(): Boolean {
-        val uuid = screenStreamUuid ?: return true
-        val body = linkedMapOf("streams" to listOf(linkedMapOf<String, Any?>("type" to SCREEN_STREAM_TYPE, "uuid" to uuid)))
-        val success = sendTeardown(body, "屏幕流")
-        if (success && screenStreamUuid == uuid) screenStreamUuid = null
+        val snapshot =
+            synchronized(this) {
+                val uuid = screenStreamUuid ?: return true
+                Triple(connectionEpoch, uuid, screenStreamConnectionId)
+            }
+        val stream = linkedMapOf<String, Any?>("type" to SCREEN_STREAM_TYPE, "uuid" to snapshot.second)
+        snapshot.third?.let { stream["streamConnectionID"] = it }
+        val success = sendTeardown(linkedMapOf("streams" to listOf(stream)), "屏幕流", snapshot.first)
+        synchronized(this) {
+            if (success && connectionEpoch == snapshot.first && screenStreamUuid == snapshot.second &&
+                screenStreamConnectionId == snapshot.third
+            ) {
+                screenStreamUuid = null
+                screenStreamConnectionId = null
+            }
+        }
         return success
     }
 
@@ -2855,6 +2870,7 @@ class AirPlayClient(
     private fun sendTeardown(
         body: Map<String, Any?>,
         target: String,
+        expectedEpoch: Long = connectionEpoch,
     ): Boolean =
         try {
             val (status, _) =
@@ -2865,9 +2881,10 @@ class AirPlayClient(
                     timeoutMillis = 1_500,
                     contentType = "application/x-apple-binary-plist",
                     allowDuringStop = true,
+                    expectedEpoch = expectedEpoch,
                 )
             log("AIRPLAY: TEARDOWN（$target）[$status]")
-            status.contains("200")
+            status.split(' ').getOrNull(1) == "200" && connectionEpoch == expectedEpoch
         } catch (error: IOException) {
             log("AIRPLAY: TEARDOWN（$target）失败 - ${error.message}")
             false
