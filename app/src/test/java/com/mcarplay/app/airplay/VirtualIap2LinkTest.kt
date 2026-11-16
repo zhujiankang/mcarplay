@@ -59,7 +59,9 @@ class VirtualIap2LinkTest {
                 },
                 tunnelWriter = { null },
                 // 关闭节拍线程：测试内确定性驱动（无重传干扰）
-                alive = { false },
+                alive = { true },
+                tickAutomatically = false,
+                nowPlayingProvider = { null },
                 nowMillis = { clock },
             )
         var clock = 0L
@@ -316,7 +318,7 @@ class VirtualIap2LinkTest {
     }
 
     @Test
-    fun nowPlayingIdleReplyIsTheFridaConstantVerbatim() {
+    fun nowPlayingIdleReplyHasStoppedStateAndClearsArtworkWhileOtherRepliesKeepTheirWireShape() {
         val h = Harness()
         h.link.setGeneration(ReceiverProfile.LinkGeneration.CLASSIC_MIB3)
         h.link.armMib3()
@@ -326,11 +328,13 @@ class VirtualIap2LinkTest {
         h.carSends(0xAA01, Iap2Csm.param(0, ByteArray(642)))
         h.carSends(0xAA03, Iap2Csm.param(0, ByteArray(96)))
         h.carSends(0x5000)
-        // 逐字节等于 Frida 抓包常量——字段布局只存在于真机行为里，重新编码极易走样
-        assertEquals(
-            VirtualIap2Link.MIB3_NOW_PLAYING_UPDATE_IDLE.toList(),
-            h.lastRawFrameOf(0x5001)!!.toList(),
-        )
+        val frame = Iap2Csm.Parser().offer(h.lastRawFrameOf(0x5001)!!).single()
+        val groups = Iap2Csm.parseParams(frame.body).associateBy { it.id }
+        val item = Iap2Csm.parseParams(groups.getValue(0).value).associateBy { it.id }
+        val playback = Iap2Csm.parseParams(groups.getValue(1).value).associateBy { it.id }
+        assertEquals(listOf<Byte>(0), playback.getValue(0).value.toList())
+        assertEquals(listOf<Byte>(0), item.getValue(26).value.toList())
+        assertEquals(listOf<Byte>(0), item.getValue(1).value.toList())
         assertEquals(
             VirtualIap2Link.MIB3_COMMUNICATIONS_UPDATE_IDLE.toList(),
             run {

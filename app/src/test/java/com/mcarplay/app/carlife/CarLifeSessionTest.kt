@@ -16,6 +16,33 @@ import java.util.concurrent.atomic.AtomicReference
 
 class CarLifeSessionTest {
     @Test
+    fun encryptedDirectMediaInfoReachesTheCallbackAfterVideoAuthentication() {
+        val infos = mutableListOf<CarLifeMediaInfo>()
+        val session = CarLifeSession(Application(), onAccessUnit = {}, onEnded = {}, log = {}, onMediaInfo = infos::add)
+        val machine = field("stateMachine").get(session) as CarLifeStateMachine
+        val payload =
+            CarLifeProtocol.pbString(1, "source") + CarLifeProtocol.pbString(2, "title") +
+                CarLifeProtocol.pbString(4, "album") + CarLifeProtocol.pbBytes(5, byteArrayOf(1, 2, 3)) + CarLifeProtocol.pbInt(6, 1000)
+        val handle = CarLifeSession::class.java.getDeclaredMethod("handleCommand", CarLifeFrame::class.java).apply { isAccessible = true }
+        handle.invoke(session, CarLifeFrame(CarLifeProtocol.PORT_COMMAND, 0x10035, 0, 0, payload))
+        assertTrue(infos.isEmpty())
+        val cipher = CarLifePayloadCipher(ByteArray(16))
+        CarLifeStateMachine::class.java
+            .getDeclaredField("state")
+            .apply {
+                isAccessible = true
+            }.set(machine, CarLifeStateMachine.State.VIDEO_RUNNING)
+        CarLifeStateMachine::class.java
+            .getDeclaredField("payloadCipher")
+            .apply { isAccessible = true }
+            .set(machine, cipher)
+        handle.invoke(session, CarLifeFrame(CarLifeProtocol.PORT_COMMAND, 0x10035, 0, 0, cipher.encrypt(payload)))
+        assertEquals("title", infos.single().song)
+        assertEquals("album", infos.single().album)
+        assertTrue(infos.single().artwork!!.contentEquals(byteArrayOf(1, 2, 3)))
+    }
+
+    @Test
     fun microphoneCommandsAreAcceptedDuringVideoRunningButNotBeforeAuthentication() {
         val requests = mutableListOf<Int>()
         val session = CarLifeSession(Application(), onAccessUnit = {}, onEnded = {}, log = {}, onMicrophoneRequest = requests::add)

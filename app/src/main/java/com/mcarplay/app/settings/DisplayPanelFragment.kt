@@ -28,6 +28,10 @@ class DisplayPanelFragment : SettingsPanelFragment() {
 
     override fun onViewCreated(view: View) {
         val ctx = requireContext()
+        view.findViewById<android.widget.CheckBox>(R.id.clusterLyricsCompatibility).apply {
+            isChecked = MediaPrefs.clusterLyrics(ctx)
+            setOnCheckedChangeListener { _, checked -> MediaPrefs.setClusterLyrics(ctx, checked) }
+        }
         val selectedText = ctx.getColor(R.color.ui_on_accent)
         val idleText = ctx.getColor(R.color.ui_text_secondary)
         val scaleSeek = view.findViewById<SeekBar>(R.id.displayScaleSeek)

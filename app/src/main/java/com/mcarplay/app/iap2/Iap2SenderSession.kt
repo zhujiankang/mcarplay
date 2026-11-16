@@ -122,6 +122,17 @@ class Iap2SenderSession(
     private var pendingOverflowLogged = false
 
     private val random = SecureRandom()
+    private val nowPlaying =
+        NowPlayingLink(
+            provider = { com.mcarplay.app.media.CarMediaState.current },
+            sendControl = channel::sendMediaControl,
+            sendFile = channel::sendMediaFile,
+            maximumPayload = { channel.mediaPayloadLimit },
+            fileSupported = { channel.supportsFileTransfer },
+            ready = { channel.isAlive },
+            now = { System.nanoTime() / 1_000_000 },
+            log = log,
+        )
 
     /** 0x5703 解析结果（保活期间车机重发 0x5702 时需重新应答）。 */
     @Volatile
@@ -602,7 +613,10 @@ class Iap2SenderSession(
         var lastLoggedId = -1
         var repeatCount = 0
         while (true) {
-            val frame = recvFrame(30_000L)
+            if (channel.consumeMediaFailure()) nowPlaying.transportFailure()
+            repeat(32) { channel.receiveMediaFile()?.let(nowPlaying::file) }
+            nowPlaying.tick()
+            val frame = recvFrame(200L)
             if (frame == null) {
                 if (!channel.isAlive) break
                 if (Thread.currentThread().isInterrupted) {
@@ -625,6 +639,7 @@ class Iap2SenderSession(
             // 窗口」的晚信号在 Phase 1 之后才到。若跟着限流逻辑走，它要么被当成
             // keep-alive 只记长度，要么因与上一条同 ID 被 continue 掉——两种都等于
             // 丢弃（2026-10-18 Audi MMI 9310「连上后 15 秒自动断开」的根因）。
+            if (nowPlaying.control(frame)) continue
             if (frame.messageId == Iap2MessageIds.CARPLAY_START_SESSION) {
                 handleLateStartSession(frame)
             }

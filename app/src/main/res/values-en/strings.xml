@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="cluster_lyrics_compatibility">Cluster lyric compatibility (experimental)</string>
+    <string name="cluster_lyrics_compatibility_desc">Show matching CarWith lyric lines in the song title field. Off by default. This is not a native lyrics window; some cars may truncate or ignore updates.</string>
     <string name="update_title">Check for updates</string>
     <string name="update_safety">Park and disconnect from the head unit first. Updates are downloaded only from this repository\'s GitHub Releases; the hash, package name, version and signature are checked before installing, and the system still asks you to confirm. Nothing is uninstalled or cleared automatically.</string>
     <string name="update_preview">Include prereleases (experimental, may be unstable)</string>

@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools" tools:locale="zh-rCN">
+    <string name="cluster_lyrics_compatibility">仪表歌词兼容模式（实验）</string>
+    <string name="cluster_lyrics_compatibility_desc">将 CarWith 提供且能匹配当前歌曲的歌词行显示在歌曲标题位置。默认关闭；不是原生歌词窗口，部分车机可能截断或不更新。</string>
     <string name="update_title">检查更新</string>
     <string name="update_safety">请停车并断开车机后操作。仅从本仓库 GitHub Releases 下载；安装前检查哈希、包名、版本和签名，仍需系统确认。不会自动卸载或清数据。</string>
     <string name="update_preview">包含预发布版本（实验功能，可能不稳定）</string>

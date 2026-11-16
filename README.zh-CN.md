@@ -1,5 +1,7 @@
 # mcarplay
 
+> `mercedes-carlife` 的 `0.1.13-debug` 接通 CarLife 歌曲信息、实际 iAP2 正在播放订阅和协商出的封面文件通道。歌词提供默认关闭的标题替换实验，不是原生歌词窗口。保留此前奔驰屏幕/语音修复，封面可见性和歌词刷新仍待实车验证；见[分析与测试说明](docs/MERCEDES-CARLIFE-0.1.13.md)。
+
 > `mercedes-carlife` 的 `0.1.12-debug` 修复漏读 `params.siriAction` 的语音事件，对已核对 Mercedes-Benz/MB_D-M-5 身份在原车/倒车接管期间保留原视频连接；按主屏归属暂停图像，归还后从新 IDR 恢复，切换不触发再次 SETUP/RECORD。短按分配、实际麦克风识别和新包实车验收仍待确认，独立 iAP2/网络问题仍未解决。见[分析与测试说明](docs/MERCEDES-CARLIFE-0.1.12.md)。
 
 > `mercedes-carlife` 实验分支：同机 **CarWith → CarLife → 无线 CarPlay**。用户已确认 0.1.8 在奔驰 GLC260 2024 显示 CarWith，但存在尺寸、返回原车和稳定性问题；这是部分证据，尚非完整车型验收。代码对比与实车计划见 [分析报告](docs/CARPTOCARL-MERCEDES-CARLIFE-REVIEW.zh-CN.md)。

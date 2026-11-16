@@ -1,5 +1,20 @@
 # Connection Diagnostics
 
+## 0.1.13：仪表媒体证据链
+
+`MEDIA-BRIDGE` 新增状态日志，不含歌名、歌手、歌词、图片、内容哈希或URI：
+
+- `carlifeInfoReceived` / `artworkBytes`：已解析的正式CarLife媒体消息数量/图片字段长度。
+- `artworkNormalized` / `bytes`：后台得到有界JPEG候选，仍需实机验证图片解码效果。
+- `subscribed fileTransfer=...` / `unsubscribed`：本连接实际收到0x5000/5002；能力列表不是订阅证据。
+- `artworkAttributesReceived`：实际收到0x5003；不证明满足车机全部尺寸/格式要求。
+- `updatesQueued` / `artworkDeclared` / `lyricCompatibility`：排入文字/图片编号更新及是否临时以歌词替换标题，不等于仪表可见。
+- `artworkSetup id=... bytes=...` / `artworkSuccess id=...`：文件请求/车机文件协议成功，后者仍需用户确认仪表可见封面。
+- `artwork response timeout` / `declined/paused/cancelled`：关闭本连接图片尝试，保留文字更新。
+- `optional packet awaiting ACK`：暂停新媒体，保留已发送序号的原有重试/失败策略；不宣称绕过链路ACK或解决历史packet105异常。
+
+媒体通路启用后关闭对应蓝牙原始收发字节转储，网络媒体CSM隐藏载荷；系统媒体会话日志仅写存在/状态标记。复现时注明音乐App、仪表或中控所在页面、通知使用权状态和时间，先关闭歌词兼容测试封面，再按需开启。完整解释见 [0.1.13说明](MERCEDES-CARLIFE-0.1.13.md)。
+
 ## 0.1.10：异常媒体结束后的新回连
 
 `BT-INCOMING` 记录本机业务准入结果，区别于 `BT-DIAG INCOMING` 接受了蓝牙 socket：

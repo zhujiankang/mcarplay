@@ -6,6 +6,8 @@
 
 ## 当前基线与结论
 
+- **11 月 16 日仪表媒体候选 `0.1.13-debug`（`mercedes-carlife`）：** 此前切歌上行已接通，但 CarLife `0x10035` 媒体消息未解析，网络 NowPlaying 仅空态回复，缺少蓝牙订阅更新和封面文件传输。本版兼容直接/列表媒体消息，增加正式会话隔离、可选系统媒体会话回退、后台有界JPEG及双iAP2订阅；按奔驰会话表选择文件2、EA3，封面等待START后分块并记录SUCCESS。默认关闭的歌词标题替换仅使用匹配且新鲜的源端歌词，不代表原生歌词窗口。队列有界，ACK停顿暂停新媒体，但已发送链路序号保留正常重试/失败规则。完整standard1001项、remote bridge24项（均无失败/错误/跳过）、Spotless、lint和debug构建、同证书校验通过。验收与新诊断见 `docs/MERCEDES-CARLIFE-0.1.13.md`；本版尚无实车显示证据。
+
 - **11 月 16 日奔驰接管屏幕/语音候选 `0.1.12-debug`（`mercedes-carlife`）：** 0.1.11 最新实测在奔驰借屏归还后重新 SETUP/RECORD，约129ms后车机关闭视频和事件通道；推流开始已电池豁免，无该窗口EPERM证据。修复标准 siriAction 字段解析；已核对奔驰改为保留原视频连接，按归属门控图像并等待新IDR，原车主页切换同样保留；其他车机保持既有策略。小爱图标可拉起不等于麦克风识别已验证，方向盘短按可能仍分配原车语音。完整standard980项、remote bridge24项及Spotless/lint/debug构建、同证书校验通过。见 `docs/MERCEDES-CARLIFE-0.1.12.md`，新包实车验收待完成。
 
 - **11 月 16 日麦克风/方向盘语音候选 `0.1.11-debug`（`mercedes-carlife`，未发布）：** 新增车机声明的 speechRecognition PCM 输入、认证 RTP 解密、16kHz 单声道转换、CarLife `0x58001` AES 回传和语音按键处理；输入生命周期有队列上限、结束/超时清理及连接代数隔离，保留奔驰 RECORD 去重与媒体通道。GPS/车辆数据/仪表导航仅记录能力和实际收取/订阅，尚未实现转发。完整 standard 972 项、remote bridge 24 项和 Spotless/lint/debug 构建、同证书校验通过。见 `docs/MERCEDES-CARLIFE-0.1.11.md`，新 APK 实车语音验收待完成；网络 EPERM/iAP2 ACK 问题仍未解决。

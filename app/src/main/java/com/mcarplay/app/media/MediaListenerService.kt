@@ -157,6 +157,7 @@ class MediaListenerService : NotificationListenerService() {
                 val title = meta?.getString(MediaMetadata.METADATA_KEY_TITLE)
                 MediaSessionsState.NowPlaying(
                     title = title,
+                    album = meta?.getString(MediaMetadata.METADATA_KEY_ALBUM),
                     artist =
                         meta?.getString(MediaMetadata.METADATA_KEY_ARTIST)
                             ?: meta?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST),
@@ -255,6 +256,7 @@ object MediaSessionsState {
         val durationMs: Long = 0L,
         /** 位置采样的 SystemClock.elapsedRealtime 锚点。 */
         val anchoredAtMs: Long = 0L,
+        val album: String? = null,
     ) {
         /** 渲染时刻的推算播放位置（播放中按速度外推，钳制在时长内）。 */
         fun displayPositionAt(elapsedRealtimeMs: Long): Long {
@@ -306,7 +308,9 @@ object MediaSessionsState {
         if (contentChanged) {
             logSink?.invoke(
                 "MEDIA: " + (
-                    value?.let { "${it.title ?: "?"} - ${it.artist ?: "?"} playing=${it.playing}" }
+                    value?.let {
+                        "active=true playing=${it.playing} titlePresent=${!it.title.isNullOrBlank()} artworkPresent=${it.art != null}"
+                    }
                         ?: "无活跃会话"
                 ),
             )

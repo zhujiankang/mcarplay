@@ -62,6 +62,7 @@ import com.mcarplay.app.input.HidNavigation
 import com.mcarplay.app.input.MediaKeyEdge
 import com.mcarplay.app.input.TouchReports
 import com.mcarplay.app.media.AutoPlaySuppressor
+import com.mcarplay.app.media.MediaMetadataRelay
 import com.mcarplay.app.media.MediaSessionsState
 import com.mcarplay.app.net.AirPlayFeatures
 import com.mcarplay.app.net.CarPlayCtrlAdvertiser
@@ -105,6 +106,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 object SessionController {
     private val microphoneBridge = CarLifeMicrophoneBridge(log = { appendLog(it) })
+    private val metadataRelay = MediaMetadataRelay { appendLog(it) }
     private val voiceKeyRouter =
         VoiceKeyRouter({ SystemClock.uptimeMillis() }) { key ->
             val source = currentCarLifeSession
@@ -605,7 +607,10 @@ object SessionController {
         synchronized(carLifeSessions) {
             if (!carLifeSessions.acquire(owner, session.lease)) return@synchronized false
             when (owner) {
-                CarLifeSessionRegistry.Owner.FORMAL -> formalCarLifeSession = session
+                CarLifeSessionRegistry.Owner.FORMAL -> {
+                    formalCarLifeSession = session
+                    appContext?.let { metadataRelay.start(it, session) }
+                }
                 CarLifeSessionRegistry.Owner.DIAGNOSTIC -> diagnosticCarLifeSession = session
             }
             true
@@ -615,6 +620,7 @@ object SessionController {
         synchronized(carLifeSessions) {
             if (!carLifeSessions.release(session.lease)) return@synchronized false
             if (formalCarLifeSession === session) {
+                metadataRelay.stop(session)
                 formalCarLifeSession = null
                 carLifePreroll.clear()
             }
@@ -1061,6 +1067,10 @@ object SessionController {
                 },
                 onAudioEvent = onAudioEvent@{ channel, event ->
                     if (currentCarLifeSession !== session) return@onAudioEvent
+                    if (channel == com.mcarplay.app.carlife.CarLifeChannel.MEDIA) {
+                        if (event is CarLifeAudioEvent.Pcm) metadataRelay.playback(session, true)
+                        if (event is CarLifeAudioEvent.Stop) metadataRelay.playback(session, false)
+                    }
                     val attempt = carLifeOutput?.attempt
                     if (attempt != null && event is CarLifeAudioEvent.Init) {
                         ConnectionDiagnostics.timeline.note(
@@ -1077,6 +1087,7 @@ object SessionController {
                 log = { line -> appendLog(line) },
                 requestedVideoSize = requestedVideoSize,
                 waitForDisplaySize = requestedVideoSize == null,
+                onMediaInfo = { info -> if (currentCarLifeSession === session) metadataRelay.media(session, info) },
                 onMicrophoneRequest = onMicrophoneRequest@{ request ->
                     if (currentCarLifeSession !== session) return@onMicrophoneRequest
                     if (request == 0) microphoneBridge.stop(session)
@@ -1503,6 +1514,7 @@ object SessionController {
     ) {
         voiceKeyRouter.reset()
         microphoneBridge.stop()
+        metadataRelay.stop()
         currentClient?.beginOrderlyStop()
         screenResourceStreams?.close()
         screenResourceStreams = null

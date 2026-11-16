@@ -19,6 +19,9 @@ class Iap2LinkChannel(
     private val engine = Iap2LinkEngine()
     private val lock = Object()
     private val controls = LinkedBlockingQueue<ByteArray?>()
+    private val fileControls = LinkedBlockingQueue<ByteArray>(32)
+    private var optionalFailed = false
+    private var mediaPrivacy = false
     private val readyLatch = CountDownLatch(1)
     private val terminatedLatch = CountDownLatch(1)
 
@@ -41,6 +44,8 @@ class Iap2LinkChannel(
     val isAlive: Boolean get() = !terminated
 
     init {
+        engine.onFileTransferData = { if (it.size <= 2048) fileControls.offer(it.copyOf()) }
+        engine.onOptionalPacketStalled = { optionalFailed = true }
         engine.onPeerSynchronizationAdopted = { sync ->
             log(
                 "LINK: 采纳对端会话表 maxOutgoing=${sync.maxOutgoing} maxLen=${sync.maxLength} " +
@@ -112,6 +117,31 @@ class Iap2LinkChannel(
     }
 
     /** 取下一个控制载荷；超时或链路结束返回 null。 */
+    internal fun sendMediaControl(bytes: ByteArray): Boolean =
+        synchronized(lock) {
+            if (terminated) return@synchronized false
+            mediaPrivacy = true
+            val result = engine.sendControl(bytes, nowMillis(), optional = true)
+            drainOutputLocked()
+            result
+        }
+
+    internal fun sendMediaFile(bytes: ByteArray): Boolean =
+        synchronized(lock) {
+            if (terminated) return@synchronized false
+            mediaPrivacy = true
+            val result = engine.sendFileTransfer(bytes, nowMillis())
+            drainOutputLocked()
+            result
+        }
+
+    internal val supportsFileTransfer: Boolean get() = synchronized(lock) { engine.fileTransferSessionId != null }
+    internal val mediaPayloadLimit: Int get() = synchronized(lock) { engine.maximumPayload }
+
+    internal fun receiveMediaFile(): ByteArray? = fileControls.poll()
+
+    internal fun consumeMediaFailure(): Boolean = synchronized(lock) { optionalFailed.also { optionalFailed = false } }
+
     fun recvControl(timeoutMillis: Long): ByteArray? {
         if (timeoutMillis == 0L && terminated && controls.isEmpty()) return null
         val polled =
@@ -163,7 +193,7 @@ class Iap2LinkChannel(
      * [RAW_DUMP_LIMIT] 字节，防止长期会话日志爆炸。
      */
     private fun dumpInbound(bytes: ByteArray) {
-        if (bytes.isEmpty() || rxDumpBudget <= 0) return
+        if (mediaPrivacy || bytes.isEmpty() || rxDumpBudget <= 0) return
         val shown = minOf(bytes.size, rxDumpBudget)
         log("RAW rx: " + bytes.copyOf(shown).joinToString(" ") { "%02x".format(it) })
         rxDumpBudget -= shown
@@ -231,7 +261,7 @@ class Iap2LinkChannel(
     }
 
     private fun dumpOutbound(bytes: ByteArray) {
-        if (txDumpBudget <= 0) return
+        if (mediaPrivacy || txDumpBudget <= 0) return
         val shown = minOf(bytes.size, txDumpBudget)
         log("RAW tx: " + bytes.copyOf(shown).joinToString(" ") { "%02x".format(it) })
         txDumpBudget -= shown

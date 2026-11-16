@@ -104,6 +104,8 @@ class Iap2LinkEngine(
         var retransmissions: Int = 0,
         var deadlineMillis: Long = 0,
         val awaitAck: Boolean = true,
+        val sessionId: Int? = null,
+        val optional: Boolean = false,
     )
 
     var state: State = State.IDLE
@@ -149,6 +151,12 @@ class Iap2LinkEngine(
      * 而是交由此回调（事件通道虚拟链路上的触摸 HID 载体）。
      */
     var onEaData: ((bytes: ByteArray) -> Unit)? = null
+    var onFileTransferData: ((ByteArray) -> Unit)? = null
+    var onOptionalPacketStalled: (() -> Unit)? = null
+
+    val maximumPayload: Int get() = (peerSynchronization?.maxLength ?: 0xFFFF) - HEADER_BYTES - 1
+    val fileTransferSessionId: Int? get() = peerSynchronization?.sessions?.firstOrNull { it.kind == 1 }?.id
+    val optionalQueueAvailable: Boolean get() = state == State.NORMAL && sendBacklog.size < 4 && unacknowledged.count { it.optional } < 4
 
     /** 诊断：每个入向链路帧的摘要（control/seq/ack/sessionId/载荷长度），真车排查用。 */
     var onFrameReceived: ((control: Int, sequence: Int, ack: Int, sessionId: Int, size: Int) -> Unit)? = null
@@ -332,14 +340,29 @@ class Iap2LinkEngine(
         bytes: ByteArray,
         nowMillis: Long,
         awaitAck: Boolean = true,
+        optional: Boolean = false,
     ): Boolean {
         if (state == State.DEAD) return false
+        if (optional && !optionalQueueAvailable) return false
         val limit = (peerSynchronization?.maxLength ?: 0xFFFF) - HEADER_BYTES - 1
         if (limit <= 0 || bytes.size > limit) {
+            if (optional) return false
             die("control payload ${bytes.size} exceeds negotiated limit $limit")
             return false
         }
-        sendBacklog += Packet(0, bytes.copyOf(), awaitAck = awaitAck)
+        sendBacklog += Packet(0, bytes.copyOf(), awaitAck = awaitAck, optional = optional)
+        drainSendWindow(nowMillis)
+        return true
+    }
+
+    /** Optional artwork never grows an unbounded backlog or changes critical-control retry policy. */
+    fun sendFileTransfer(
+        bytes: ByteArray,
+        nowMillis: Long,
+    ): Boolean {
+        val session = fileTransferSessionId ?: return false
+        if (!optionalQueueAvailable || bytes.size > maximumPayload) return false
+        sendBacklog += Packet(0, bytes.copyOf(), sessionId = session, optional = true)
         drainSendWindow(nowMillis)
         return true
     }
@@ -482,7 +505,9 @@ class Iap2LinkEngine(
                 // 收到对端的数据即代表对端认为链路可用；ACK 帧若丢失/被跳过，这里兜底进入 NORMAL
                 completeNegotiationIfPending(nowMillis)
                 handleData(sequence, payload!!)
-            } else if (sessionId == SESSION_EA && onEaData != null) {
+            } else if (sessionId == fileTransferSessionId) {
+                handleData(sequence, payload!!) { onFileTransferData?.invoke(it) }
+            } else if (sessionId == (peerSynchronization?.sessions?.firstOrNull { it.kind == 2 }?.id ?: SESSION_EA) && onEaData != null) {
                 // EA 会话数据（含触摸 HID）：对端序号账法与控制会话独立，直接上抛
                 onEaData?.invoke(payload!!)
                 sendAcknowledgement()
@@ -566,6 +591,7 @@ class Iap2LinkEngine(
     private fun handleData(
         sequence: Int,
         payload: ByteArray,
+        delivery: ((ByteArray) -> Unit)? = null,
     ) {
         val distance = sequenceDistance(sequence, lastReceivedInOrder)
         val peerWindow = peerSynchronization?.maxOutgoing ?: maxOutgoing
@@ -580,7 +606,7 @@ class Iap2LinkEngine(
             die("event queue overflow")
             return
         }
-        pendingEvents += Event.Control(payload)
+        if (delivery == null) pendingEvents += Event.Control(payload) else delivery(payload)
         sendAcknowledgement()
     }
 
@@ -601,7 +627,7 @@ class Iap2LinkEngine(
             sentSequence = nextSequence(sentSequence)
             packet.sequence = sentSequence
             packet.deadlineMillis = nowMillis + retransmissionTimeoutMillis
-            writePacket(packet.payload, packet.sequence, CONTROL_ACKNOWLEDGEMENT, controlSessionId())
+            writePacket(packet.payload, packet.sequence, CONTROL_ACKNOWLEDGEMENT, packet.sessionId ?: controlSessionId())
             if (!packet.awaitAck) continue // 发后不管：不追踪、不重传（见 sendControl 注释）
             if (peer == null || peer.maxRetransmissions > 0) {
                 unacknowledged += packet
@@ -619,11 +645,18 @@ class Iap2LinkEngine(
         val next = unacknowledged.minByOrNull { it.deadlineMillis } ?: return
         next.deadlineMillis = nowMillis + retransmissionTimeoutMillis
         next.retransmissions += 1
+        if (next.optional && next.retransmissions == 2) {
+            // Only unsent packets can be discarded: all sessions share the link sequence space.
+            // Retain/retry already transmitted packets, or a strict receiver could wait forever
+            // for a missing sequence and stop acknowledging subsequent critical control.
+            sendBacklog.removeAll { it.optional }
+            onOptionalPacketStalled?.invoke()
+        }
         if (next.retransmissions > maxRetransmissions) {
             die("packet ${next.sequence} not acknowledged")
             return
         }
-        writePacket(next.payload, next.sequence, CONTROL_ACKNOWLEDGEMENT, controlSessionId())
+        writePacket(next.payload, next.sequence, CONTROL_ACKNOWLEDGEMENT, next.sessionId ?: controlSessionId())
         retransmitDeadline = unacknowledged.minOfOrNull { it.deadlineMillis }
     }
 

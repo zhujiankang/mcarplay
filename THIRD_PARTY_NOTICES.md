@@ -95,3 +95,12 @@ message IDs, recording direction and PCM format were cross-checked against
 Baidu's publicly published CarLife vehicle SDK in milesking/apollo-DuerOS,
 commit `6a07419818f46aadda34c5f55e63d4a1fc8136ef` (Apache-2.0). Only protocol
 facts are used; that SDK implementation is not distributed here.
+
+The 0.1.13 media bridge compares `Iap2NowPlaying.kt`, `Iap2ArtworkTransfer.kt`,
+`NowPlayingSourcePolicy.kt` and `LyricLines.kt` from that same pinned CarPToCarL
+version. Its MIT copyright notice remains unchanged. mcarplay integrates a
+bounded subscription/file state machine with its own negotiated link sessions,
+formal-source generations and privacy controls. The CarLife media field layout
+was checked against the Apache-2.0 Baidu CarLife protobuf definition in
+[milesking/apollo-DuerOS](https://github.com/milesking/apollo-DuerOS/blob/6a07419818f46aadda34c5f55e63d4a1fc8136ef/CarLife-Vehicle-Lib/LibSource/protobuf/proto/CarlifeMediaInfoProto.proto);
+no generated code, SDK, reference APK or OEM component is bundled.

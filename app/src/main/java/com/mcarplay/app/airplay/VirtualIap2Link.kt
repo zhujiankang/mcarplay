@@ -46,9 +46,22 @@ class VirtualIap2Link(
     private val mfiContext: Context? = null,
     /** 时钟（单测可注入）。 */
     private val nowMillis: () -> Long = { System.nanoTime() / 1_000_000L },
+    private val nowPlayingProvider: () -> com.mcarplay.app.media.CarMediaSnapshot? = { com.mcarplay.app.media.CarMediaState.current },
+    private val tickAutomatically: Boolean = true,
 ) {
     private val lock = Any()
     private val engine = Iap2LinkEngine()
+    private val nowPlaying =
+        com.mcarplay.app.iap2.NowPlayingLink(
+            provider = nowPlayingProvider,
+            sendControl = { engine.sendControl(it, nowMillis(), optional = true) },
+            sendFile = { engine.sendFileTransfer(it, nowMillis()) },
+            maximumPayload = { engine.maximumPayload },
+            fileSupported = { engine.fileTransferSessionId != null },
+            ready = { alive() && engine.state == Iap2LinkEngine.State.NORMAL },
+            now = nowMillis,
+            log = log,
+        )
     private val parser = Iap2Csm.Parser()
     private var frameCount = 0
     private var eaCount = 0
@@ -160,24 +173,29 @@ class VirtualIap2Link(
         engine.onDetect = ::handlePeerDetectLocked
         engine.onEaData = { bytes -> handleEaData(bytes) }
         engine.onSynchronizationEchoSent = { pendingEchoFlush = true }
-        Thread(
-            {
-                while (alive()) {
-                    try {
-                        Thread.sleep(200)
-                    } catch (_: InterruptedException) {
-                        return@Thread
+        engine.onFileTransferData = { nowPlaying.file(it) }
+        engine.onOptionalPacketStalled = { nowPlaying.transportFailure() }
+        if (tickAutomatically) {
+            Thread(
+                {
+                    while (alive()) {
+                        try {
+                            Thread.sleep(200)
+                        } catch (_: InterruptedException) {
+                            return@Thread
+                        }
+                        synchronized(lock) {
+                            engine.advanceTime(nowMillis())
+                            nowPlaying.tick()
+                            drainLocked()
+                        }
                     }
-                    synchronized(lock) {
-                        engine.advanceTime(nowMillis())
-                        drainLocked()
-                    }
-                }
-            },
-            "iap-link-pacer",
-        ).apply {
-            isDaemon = true
-            start()
+                },
+                "iap-link-pacer",
+            ).apply {
+                isDaemon = true
+                start()
+            }
         }
     }
 
@@ -532,6 +550,7 @@ class VirtualIap2Link(
         val mib3 = (mib3Armed || eventLinkArmed) && !onTunnel
         if (!onTunnel && !mib3) return
         val ids = Iap2MessageIds
+        if (nowPlaying.control(frame)) return
         when (frame.messageId) {
             ids.IDENTIFICATION_INFORMATION -> {
                 val identified = if (onTunnel) tunnelIdentified else mib3Identified
@@ -657,14 +676,6 @@ class VirtualIap2Link(
                 log("IAPLINK: MIB3 0x4170 → 0x4171（空列表）")
             }
 
-            Iap2MessageIds.START_NOW_PLAYING_UPDATES -> {
-                if (!mib3) return
-                sendRawCsmLocked(MIB3_NOW_PLAYING_UPDATE_IDLE)
-                // 仪表盘歌词/媒体卡的数据通路（0x5001 + file-transfer 封面）后续接
-                // MediaSessionsState——空态应答是 MIB3 存活的前置，先落这版。
-                log("IAPLINK: MIB3 0x5000 → 0x5001（空态）——仪表盘媒体数据待接")
-            }
-
             ids.START_HID -> {
                 // 车机声明「我要开始发 HID 报告了」，通常带描述符（决定报告字节语义）
                 val params = Iap2Csm.parseParams(frame.body)
@@ -731,7 +742,7 @@ class VirtualIap2Link(
                     log(
                         "IAPLINK: 未处理的 CSM 0x${frame.messageId.toString(16)} " +
                             "(${Iap2MessageIds.nameOf(frame.messageId)}) ${frame.body.size}B hex=" +
-                            if (VehicleDataStatus.privatePayload(frame.messageId)) {
+                            if (VehicleDataStatus.privatePayload(frame.messageId) || frame.messageId in 0x5000..0x5003) {
                                 "[private-vehicle-payload]"
                             } else {
                                 frame.body.joinToString(" ") { "%02x".format(it) }
@@ -836,7 +847,7 @@ class VirtualIap2Link(
         val frames = parser.offer(bytes)
         for (frame in frames) {
             val hex =
-                if (VehicleDataStatus.privatePayload(frame.messageId)) {
+                if (VehicleDataStatus.privatePayload(frame.messageId) || frame.messageId in 0x5000..0x5003) {
                     "[private-vehicle-payload]"
                 } else {
                     frame.body.joinToString(" ") { "%02x".format(it) }

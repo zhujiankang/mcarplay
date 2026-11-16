@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — mercedes-carlife (0.1.13)
+
+Validation: standard 1001 + remote bridge 24 tests passed (0 failures/errors/skips); Spotless, lint (0 errors), debug APK build and same-certificate verification passed. Vehicle media acceptance is pending.
+
+English: Parse authenticated CarLife direct/list media messages and publish bounded local song metadata/artwork with optional MediaSession fallback. Handle real NowPlaying subscriptions on Bluetooth and network iAP2; select negotiated file/EA sessions and transfer artwork with SETUP/START/chunks/SUCCESS, cancellation, response timeout and bounded queues. Suspend new optional media after ACK stalls while retaining transmitted sequence numbers and existing link failure policy. Add opt-in, correlated, fresh lyric-as-title compatibility; keep it off by default and hide media content from new logs. Retain prior Mercedes screen/voice fixes. Vehicle artwork/lyrics acceptance is pending; native lyrics, GPS/vehicle/cluster navigation forwarding and independent link ACK failures remain unresolved.
+
+简体中文：解析已认证 CarLife 直接/列表媒体消息，发布有界本地歌曲信息与封面，可选系统媒体会话回退；蓝牙/网络iAP2响应真实订阅，按协商选择文件/EA会话，完成封面SETUP/START/分块/SUCCESS、取消、响应超时和限队列。ACK停顿暂停新媒体，保留已发送序号和既有链路失败规则。增加默认关闭、严格匹配且短时有效的歌词替换标题实验，新日志隐藏媒体正文。保留此前奔驰屏幕/语音修复。新包封面/歌词仍待实车确认，不代表原生歌词窗口；GPS/车辆/仪表导航转发及独立ACK异常仍未解决。
+
 ## Unreleased — mercedes-carlife (0.1.12)
 
 Validation: standard 980 + remote bridge 24 tests passed; Spotless, lint (0 errors), debug APK build and same-certificate verification passed. Vehicle validation is pending.

@@ -208,6 +208,22 @@
             android:textColor="@color/ui_text_secondary"
             android:textSize="12sp" />
 
+        <CheckBox
+            android:id="@+id/clusterLyricsCompatibility"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:layout_marginTop="16dp"
+            android:text="@string/cluster_lyrics_compatibility"
+            android:textColor="@color/ui_text" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/cluster_lyrics_compatibility_desc"
+            android:textColor="@color/ui_text_secondary"
+            android:textSize="12sp" />
+
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

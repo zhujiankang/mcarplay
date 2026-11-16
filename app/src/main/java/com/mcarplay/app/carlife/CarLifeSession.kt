@@ -44,6 +44,7 @@ class CarLifeSession(
     private val onReturnToCar: () -> Unit = {},
     private val waitForDisplaySize: Boolean = false,
     private val onMicrophoneRequest: (Int) -> Unit = {},
+    private val onMediaInfo: (CarLifeMediaInfo) -> Unit = {},
 ) {
     private val appContext: Application = application
     internal val lease = CarLifeSessionLease()
@@ -429,6 +430,7 @@ class CarLifeSession(
         result.log?.let { message -> log(message) }
         result.actions.forEach(::sendAction)
         if (result.returnToCar) onReturnToCar()
+        if (stateMachine.state == CarLifeStateMachine.State.VIDEO_RUNNING) result.mediaInfo.forEach(onMediaInfo)
         result.microphone?.let { request ->
             if (stateMachine.state == CarLifeStateMachine.State.VIDEO_RUNNING) onMicrophoneRequest(request)
         }

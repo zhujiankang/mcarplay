@@ -10,6 +10,22 @@ import android.content.Context
  * 暂停一次；连接前已经在播放的音乐保持不变，之后仍可在车机上手动播放。
  */
 object MediaPrefs {
+    fun clusterLyrics(context: Context): Boolean =
+        context
+            .getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .getBoolean("cluster_lyrics_compatibility", false)
+
+    fun setClusterLyrics(
+        context: Context,
+        enabled: Boolean,
+    ) {
+        context
+            .getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("cluster_lyrics_compatibility", enabled)
+            .apply()
+    }
+
     const val AUTO_PLAY_ON_CONNECT_DEFAULT = true
 
     private const val PREFS_NAME = "settings"
