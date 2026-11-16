@@ -477,8 +477,11 @@ object SessionController {
     }
 
     @Synchronized
-    private fun incomingBluetoothSession(context: Context): Boolean {
-        if (disconnectCompletion != null || discoverySuppressed) return false
+    internal fun incomingBluetoothSession(context: Context): Boolean {
+        if (disconnectCompletion != null || discoverySuppressed) {
+            appendLog("BT-INCOMING: REJECT reason=USER_STOP_OR_CLEANUP")
+            return false
+        }
         bringupGrace.cancel()
         if (discoveryOnly) {
             audioEnabledForSession = ConnectionAudioPrefs
@@ -487,7 +490,24 @@ object SessionController {
             appendLog("BT-DISCOVERY: 收到真实 iAP2 连入，提升为正式连接（协议仍需继续协商）")
             startConnection(context)
         }
-        return !connectCancelled && isSessionRunning()
+        if (connectCancelled) {
+            // endClientSession 取消的是旧媒体周期，仍保留了用户授权的蓝牙监听。
+            // 只有真正的新回连才能恢复；不能让旧端点/旧回调或用户停止后的连入复活会话。
+            if (currentClient != null || sessionStarting.get() || !isSessionRunning()) {
+                appendLog("BT-INCOMING: REJECT reason=NO_RECOVERABLE_LISTENER")
+                return false
+            }
+            endpointGeneration.incrementAndGet()
+            connectCancelled = false
+            val attempt = ConnectionDiagnostics.begin("bluetooth_reconnect_after_media_end")
+            ConnectionDiagnostics.timeline.stage(attempt, ConnectionStage.BLUETOOTH)
+            bluetoothDiagnostics.begin(attempt, preserveServerState = bluetoothServer?.isRunning == true)
+            ReceiverDetectionRuntime.connectionStarted(attempt)
+            appendLog("BT-INCOMING: ACCEPT reason=RECOVER_RETIRED_MEDIA_SESSION（旧周期仍由代数隔离）")
+        }
+        val accepted = !connectCancelled && isSessionRunning()
+        if (!accepted) appendLog("BT-INCOMING: REJECT reason=INACTIVE_SESSION")
+        return accepted
     }
 
     fun bluetoothDiagnosticSummary(): String = bluetoothDiagnostics.summary()

@@ -1,5 +1,15 @@
 # Connection Diagnostics
 
+## 0.1.10：异常媒体结束后的新回连
+
+`BT-INCOMING` 记录本机业务准入结果，区别于 `BT-DIAG INCOMING` 接受了蓝牙 socket：
+
+- `ACCEPT reason=RECOVER_RETIRED_MEDIA_SESSION`：仍有运行中的蓝牙服务，异常结束后的新回连启动独立诊断周期；不代表已完成 iAP2、CarPlay 或实际出画。
+- `REJECT reason=USER_STOP_OR_CLEANUP`：用户停止或清理优先，不允许回连复活。
+- `REJECT reason=NO_RECOVERABLE_LISTENER` / `INACTIVE_SESSION`：当前没有可安全恢复的运行状态。
+
+恢复周期的 `BEGIN` 来源为 `bluetooth_reconnect_after_media_end`，旧媒体周期保留原 END。旧回调继续按代数和所有权隔离。缺少车机的新连入时，这些日志无法证明车机是否已读取 SDP，不能将本机注册成功当作图标必然出现。
+
 [English README](../README.md) | [中文说明](../README.zh-CN.md)
 
 Standard builds and all release builds export redacted reports. The explicitly

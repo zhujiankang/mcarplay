@@ -1,6 +1,6 @@
 # mcarplay
 
-> `mercedes-carlife` 的 `0.1.9-debug` 适配屏幕仲裁与主屏单流退役/恢复，等待车机画布后初始化源视频，并增加等比例回退与触摸映射。本构建尚待实车验证，见 [测试说明](docs/MERCEDES-CARLIFE-0.1.9.md)。
+> `mercedes-carlife` 的 `0.1.10-debug` 修复异常媒体结束后拒绝新蓝牙回连的准入逻辑，保留手动停止和旧回调隔离。没有增加麦克风上行，独立网络异常仍待定位。候选尚待实车验证，见 [测试说明](docs/MERCEDES-CARLIFE-0.1.10.md)。
 
 > `mercedes-carlife` 实验分支：同机 **CarWith → CarLife → 无线 CarPlay**。用户已确认 0.1.8 在奔驰 GLC260 2024 显示 CarWith，但存在尺寸、返回原车和稳定性问题；这是部分证据，尚非完整车型验收。代码对比与实车计划见 [分析报告](docs/CARPTOCARL-MERCEDES-CARLIFE-REVIEW.zh-CN.md)。
 

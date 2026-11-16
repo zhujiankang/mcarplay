@@ -6,6 +6,8 @@
 
 ## 当前基线与结论
 
+- **11 月 16 日异常断线后回连候选 `0.1.10-debug`（`mercedes-carlife`）：** 修正媒体退役后全局取消标志阻止新蓝牙回连的准入逻辑，保留手动停止、清理和旧代数隔离。0.1.9 实车已确认原生 1624×1150 画面和音频正常，但小爱麦克风问题、约18秒停顿后网络 EPERM、后续图标消失仍需分层定位；本轮不宣称实现车机麦克风。新增5项回归，完整 standard 958 项、remote bridge 24 项及 lint/debug构建、同证书签名校验通过。步骤见 `docs/MERCEDES-CARLIFE-0.1.10.md`，候选尚未实车验收。
+
 - **11 月 16 日奔驰屏幕生命周期与显示适配候选 `0.1.9-debug`（`mercedes-carlife`，未发布）：** 在原事件应答返回资源仲裁，按归属退役/重建主屏流，保留源、音频和控制通道；按屏幕 SETUP 周期管理 RECORD。预热源等待车机画布后首轮初始化，增加原生尺寸请求与比例不一致时的一次硬件转码留边回退，统一触摸坐标。新增事件 TCP、屏幕恢复、激活代数、尺寸时序与几何测试。完整 standard 953 项、remote bridge 24 项均 0 失败/错误/跳过；Spotless、standard lint/debug 构建和同证书签名校验通过。本轮实车验收待用户完成，见 `docs/MERCEDES-CARLIFE-0.1.9.md`；0.1.8 已有用户出画证据，但 native 崩溃与网络 iAP2 ACK 问题仍待定位。
 
 - **11 月 16 日奔驰通信修复候选 `0.1.8-debug`（`mercedes-carlife`，未发布）：** 修复首次 DETECT 回应、增量解析及交接/旧回调隔离，统一媒体/控制终态，增加有界 GOP 预热与声音偏好保留。奔驰 `MB_D-M-5` 默认使用一次激活实验策略，可切换原顺序或音频优先；没有新实车验收。完整 standard 933 项、remote bridge 24 项均 0 失败/错误/跳过；Spotless、standard lint 和 debug APK 构建通过。测试方式见 `docs/MERCEDES-CARLIFE-0.1.8.md`。

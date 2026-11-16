@@ -1,6 +1,6 @@
 # mcarplay
 
-> `0.1.9-debug` on `mercedes-carlife` adapts screen arbitration and screen-only retirement/restoration, requests the receiver canvas before source video INIT, and adds aspect-preserving fallback and touch mapping. See the [test guide (Chinese)](docs/MERCEDES-CARLIFE-0.1.9.md); this build awaits vehicle validation.
+> `0.1.10-debug` on `mercedes-carlife` fixes fresh inbound admission after unexpected media termination, preserving manual stop and stale-callback guards. It does not add microphone uplink or resolve the separate network failures. See the [test guide (Chinese)](docs/MERCEDES-CARLIFE-0.1.10.md); vehicle validation is pending.
 
 > Experimental `mercedes-carlife` branch: same-phone **CarWith → CarLife → wireless CarPlay**. A user confirmed CarWith displayed on a 2024 Mercedes GLC260 with 0.1.8, with sizing, return-to-vehicle and stability issues. This is partial evidence, not full vehicle acceptance. See the [source comparison and vehicle test plan (Chinese)](docs/CARPTOCARL-MERCEDES-CARLIFE-REVIEW.zh-CN.md).
 

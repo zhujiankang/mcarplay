@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — mercedes-carlife (0.1.10)
+
+Validation: standard 958 + remote bridge 24 tests passed; lint/debug build and same-certificate APK verification passed. Vehicle acceptance is pending.
+
+English: Accept a fresh vehicle Bluetooth callback after an unexpected media end while preserving manual-stop and cleanup guards. Start a fresh diagnostic cycle, reject stale terminal callbacks by generation, and log business admission separately from socket acceptance. This does not add microphone uplink or resolve the network EPERM/iAP2 ACK failures; vehicle validation is pending.
+
+简体中文：修复异常媒体结束后保留蓝牙监听、却因旧取消标志立即拒绝新回连的问题。新回连启动独立诊断周期，保留用户停止、清理与旧代数隔离，并记录业务准入结果。没有增加麦克风上行，也未解决网络 EPERM/iAP2 ACK 异常；实车验证待完成。
+
 ## Unreleased — mercedes-carlife (0.1.9)
 
 Validation: standard 953 + remote bridge 24 tests passed, Spotless/lint/debug build and same-certificate APK verification passed. Vehicle acceptance is pending.
