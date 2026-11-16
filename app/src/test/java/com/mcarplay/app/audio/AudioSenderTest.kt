@@ -22,6 +22,28 @@ class AudioSenderTest {
             log = {},
         )
 
+    @Test fun carOwnershipGateSuppressesEvenQueuedAudioAndSilencePackets() {
+        DatagramSocket(0).use { receiver ->
+            receiver.soTimeout = 100
+            val allowed =
+                java.util.concurrent.atomic
+                    .AtomicBoolean(false)
+            val sender = AudioSender("127.0.0.1", receiver.localPort, key, {}, outputAllowed = { allowed.get() })
+            try {
+                org.junit.Assert.assertTrue(sender.startExternalSource())
+                sender.submitExternalPcm(ByteArray(AudioSender.PACKET_BYTES * 4))
+                org.junit.Assert.assertThrows(java.net.SocketTimeoutException::class.java) {
+                    receiver.receive(DatagramPacket(ByteArray(4096), 4096))
+                }
+                allowed.set(true)
+                receiver.soTimeout = 2000
+                receiver.receive(DatagramPacket(ByteArray(4096), 4096))
+            } finally {
+                sender.stopExternalSource()
+            }
+        }
+    }
+
     @Test
     fun telemetryObserverCannotInterruptAudioTransport() {
         DatagramSocket(0).use { receiver ->

@@ -111,3 +111,10 @@ and microphone input probe. It adapts ownership commit-after-acknowledgement
 with mcarplay's event revisions and connection guards, while retaining the
 Mercedes screen socket/activation policy. The reference probe is not evidence
 of vehicle microphone recognition. Existing MIT copyright notices remain.
+
+The 0.1.15 port adapts the same pinned CarPToCarL version's
+`AirPlayResourceState`, `CarPlayAudioIntent` and `CarPlayResourceStreams`.
+It retains MIT attribution (Copyright (c) 2026 lizhihua) and integrates the
+resource model with native CarLife playback, descriptor-scoped output
+retirement, event/connection guards and the Mercedes persistent screen policy.
+No reference APK or proprietary OEM components are included.

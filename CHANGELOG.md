@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — mercedes-carlife (0.1.15)
+
+Validation: standard 1033 + remote bridge 24 tests passed (0 failures/errors/skips); Spotless, standard lint (0 errors), standard debug APK build and same-certificate verification passed. Vehicle resource/audio/voice acceptance is pending.
+
+English: Port CarPToCarL's resource-request model to screen and main audio with acknowledged ownership commits, named/anonymous car loans, permanent versus temporary ownership and event-revision guards. Serialize resource/stream work; drive media priority500 and prompt borrowing priority100 from native CarLife activity. Gate queued RTP and silence on ownership/speech changes, scope output teardown to accepted descriptors and preserve original ownership on return. Bound prompt preroll and retries, keep old sources/connections isolated, and retain Mercedes persistent screen activation plus existing microphone/media fixes. Vehicle acceptance, actual ASR and independent virtual-iAP2 ACK failures remain open.
+
+简体中文：移植CarPToCarL资源申请模型，主屏/主音频按确认提交，区分永久/临时归属与具名/匿名借用，保留事件版本保护；统一串行资源/流工作，由原生CarLife活动驱动音乐500优先级与提示100临时借用。按归属/识别态门控已排队RTP和静音包，输出仅拆成功描述符，归还恢复原归属。限制提示缓存与重试，隔离旧源/连接；保留奔驰原屏幕激活和既有麦克风/媒体修复。实车验收、真实识别和独立虚拟iAP2 ACK异常仍待确认。
+
 ## Unreleased — mercedes-carlife (0.1.14)
 
 Validation: standard 1009 + remote bridge 24 tests passed (0 failures/errors/skips); Spotless, lint (0 errors), standard debug APK build and same-certificate verification passed. Vehicle voice/recovery acceptance is pending.

@@ -62,6 +62,7 @@ class AudioSender(
      */
     private val controlPort: Int = 0,
     private val onPacketSent: (() -> Unit)? = null,
+    private val outputAllowed: () -> Boolean = { true },
 ) {
     companion object {
         const val CHANNELS = 2
@@ -683,6 +684,10 @@ class AudioSender(
 
     /** 封包 + 发送一包（同步更新 seq/ts/nonce 游标）。返回 false 表示链路已断。 */
     private fun sendPayload(payload: ByteArray): Boolean {
+        if (!runCatching { outputAllowed() }.getOrDefault(false)) {
+            timestamp += samplesPerPacket
+            return true
+        }
         val wire = sealPacket(payload, sequence, timestamp, nonceCounter, markerPending)
         markerPending = false
         sequence = (sequence + 1) and 0xFFFF

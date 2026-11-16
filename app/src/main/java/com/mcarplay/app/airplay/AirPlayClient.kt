@@ -703,6 +703,7 @@ class AirPlayClient(
             synchronized(this) {
                 closingConnections++
                 connectionEpoch++
+                outputAudioStreams.clear()
                 sessionStopping = true
                 recordAttempt?.complete(false)
                 recordAttempt = null
@@ -911,6 +912,26 @@ class AirPlayClient(
             }
         }
 
+    internal fun acquireAudioResource(
+        priority: Int,
+        temporary: Boolean,
+        expectedEpoch: Long,
+    ): Boolean =
+        synchronized(modesPublicationLock) {
+            if (!isConnectionCurrent(expectedEpoch)) return@synchronized false
+            modes.acquireAudio(priority, temporary) { proposed ->
+                publishModes(proposed, "申请主音频 priority=$priority temporary=$temporary", expectedEpoch) && isConnectionCurrent(expectedEpoch)
+            }
+        }
+
+    internal fun releaseAudioBorrow(expectedEpoch: Long): Boolean =
+        synchronized(modesPublicationLock) {
+            if (!isConnectionCurrent(expectedEpoch)) return@synchronized false
+            modes.releaseAudioBorrow { proposed ->
+                publishModes(proposed, "归还临时主音频", expectedEpoch) && isConnectionCurrent(expectedEpoch)
+            }
+        }
+
     fun assertModes(
         releaseScreen: Boolean = false,
         expectedEpoch: Long = connectionEpoch,
@@ -968,13 +989,11 @@ class AirPlayClient(
      *
      * 与 [assertModes] 分开是因为屏幕可以归车机，而音频仍必须由手机持有；两者不能共用同一个
      * `releaseScreen` 语义。[claimed]=false 表示车机约束不允许抢占，调用方不应发送 SETUP，
-     * 等车机归还主音频后重试；[announced]=false 只表示切换未被确认，仍可尝试 SETUP。
+     * 等车机归还主音频后重试；[announced]=false 时不发送 SETUP，避免把仲裁失败记成格式失败。
      */
     fun claimMainAudioForStreaming(expectedEpoch: Long = connectionEpoch): MainAudioClaim {
-        val claim = modes.onAudioStreamStarting()
-        log("AIRPLAY: 主音频资源 → ${claim.note}")
-        val announced = claim.claimed && assertModes(expectedEpoch = expectedEpoch)
-        return MainAudioClaim(claim.note, claim.claimed, announced)
+        val accepted = acquireAudioResource(ModeArbiter.PRIORITY_USER_INITIATED, false, expectedEpoch)
+        return MainAudioClaim(if (accepted) "主音频申请已确认" else "主音频申请未确认或被约束拒绝", accepted, accepted)
     }
 
     /**
@@ -2334,7 +2353,12 @@ class AirPlayClient(
         // 音频通路已建好，但「车机在收数据、喇叭没声」还剩一种很常见的原因：
         // 接收端的 AirPlay 音量处于静音位（-144dB）——真 iPhone 会主动 SET_PARAMETER
         // volume。这里先查一次（顺带把值记进日志），查到静音位就抬到 -25dB。
-        probeAndFixVolume(host)
+        synchronized(this) {
+            if (!isConnectionCurrent(expectedEpoch)) return null
+            outputAudioStreams[connectionId] = profile.streamType
+        }
+        probeAndFixVolume(host, expectedEpoch)
+        if (!isConnectionCurrent(expectedEpoch)) return null
         return AudioStreamInfo(
             streamConnectionId = connectionId,
             dataPort = dataPort,
@@ -2342,6 +2366,37 @@ class AirPlayClient(
             streamKey = streamKey,
             sampleRate = negotiation.sampleRate,
         )
+    }
+
+    private val outputAudioStreams = java.util.concurrent.ConcurrentHashMap<Long, Long>()
+
+    /** Only accepted output descriptors are retired; no screen, session or microphone wildcard teardown. */
+    internal fun teardownOutputAudio(expectedEpoch: Long): Boolean {
+        if (!isConnectionCurrent(expectedEpoch)) return false
+        var allAccepted = true
+        for ((id, type) in outputAudioStreams.toMap()) {
+            val body = BinaryPlist.encode(mapOf("streams" to listOf(mapOf("type" to type, "streamConnectionID" to id))))
+            val (status, response) =
+                request(
+                    "TEARDOWN",
+                    "/",
+                    body,
+                    timeoutMillis = 1500,
+                    contentType = "application/x-apple-binary-plist",
+                    expectedEpoch = expectedEpoch,
+                )
+            val protocolStatus =
+                runCatching {
+                    (BinaryPlist.parse(response) as? Map<*, *>)?.get("status") as? Number
+                }.getOrNull()?.toLong()
+            val accepted =
+                status.split(' ').getOrNull(1) == "200" &&
+                    (protocolStatus == null || protocolStatus == 0L) &&
+                    isConnectionCurrent(expectedEpoch)
+            if (accepted) outputAudioStreams.remove(id, type)
+            allAccepted = allAccepted && accepted
+        }
+        return allAccepted
     }
 
     internal fun microphoneProfile(): com.mcarplay.app.audio.MicrophoneProfile? =
@@ -2460,7 +2515,10 @@ class AirPlayClient(
      * ② 若确实处于静音位（≤[MUTE_THRESHOLD_DB]），抬到 [SAFE_VOLUME_DB]。
      * 查询失败/车机不支持都不影响主链路。
      */
-    private fun probeAndFixVolume(host: String) {
+    private fun probeAndFixVolume(
+        host: String,
+        expectedEpoch: Long,
+    ) {
         val url = "rtsp://$host:${endpoint.airPlayPort}/"
         val volume: Float? =
             try {
@@ -2471,6 +2529,7 @@ class AirPlayClient(
                         "volume".toByteArray(Charsets.US_ASCII),
                         timeoutMillis = 4_000,
                         contentType = "text/parameters",
+                        expectedEpoch = expectedEpoch,
                     )
                 val text = body.toString(Charsets.UTF_8).trim()
                 log("AIRPLAY: 车机音量查询 $status body=${text.take(160)}")
@@ -2497,6 +2556,7 @@ class AirPlayClient(
                     payload.toByteArray(Charsets.US_ASCII),
                     timeoutMillis = 4_000,
                     contentType = "text/parameters",
+                    expectedEpoch = expectedEpoch,
                 )
             log(
                 if (volume == null) {

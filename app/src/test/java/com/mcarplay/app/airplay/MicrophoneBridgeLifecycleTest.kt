@@ -191,7 +191,7 @@ class MicrophoneBridgeLifecycleTest {
                         val bridge = CarLifeMicrophoneBridge({})
                         try {
                             val secret = ByteArray(32) { 3 }
-                            bridge.request(client, source, secret, 102)
+                            bridge.request(client, source, secret, null)
                             assertEquals("POST", peer.next()!!.method)
                             val setup = peer.next()!!
                             assertEquals("SETUP", setup.method)

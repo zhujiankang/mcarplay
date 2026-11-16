@@ -1,5 +1,11 @@
 # Connection Diagnostics
 
+## 0.1.15：统一资源申请/借用/归还
+
+`RESOURCE-SCREEN`为所有requestUI的确认式主屏申请；奔驰新邀请仍受借用/高约束限制。`RESOURCE-AUDIO: acquire media=... prompt=... temporary=... accepted=...`记录主音频申请，音乐500优先级、提示100临时借用；`releaseTemporary accepted=...`记录归还确认。`output stopped teardownAccepted=...`区分本地输出已停止与车机是否确认按描述符退役，不能用其中一项替代实际出声/主屏可见。输出流退役不等于会话结束，正常无播放意图时没有音频流不计故障。
+
+这些记录不含借用ID正文、PCM或媒体文本。具体边界和验收见 [0.1.15资源移植](MERCEDES-CARLIFE-0.1.15.md)。
+
 ## 0.1.14：奔驰屏幕申请与输入失败隔离
 
 - `SCREEN: 奔驰取回主屏 fromRequestUi=... acquired=...`：新邀请或明确requestUI触发申请；true表示该发布被确认且事件版本仍有效，不证明用户可见画面。

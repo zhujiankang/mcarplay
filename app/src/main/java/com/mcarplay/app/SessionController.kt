@@ -6,6 +6,8 @@ import android.os.SystemClock
 import android.view.KeyEvent
 import androidx.annotation.StringRes
 import com.mcarplay.app.airplay.AirPlayClient
+import com.mcarplay.app.airplay.AudioResourceStreams
+import com.mcarplay.app.airplay.CarPlayAudioIntent
 import com.mcarplay.app.airplay.PairVerifyClient
 import com.mcarplay.app.airplay.ScreenResourceStreams
 import com.mcarplay.app.audio.AudioDuckingPrefs
@@ -15,6 +17,7 @@ import com.mcarplay.app.audio.AudioSender
 import com.mcarplay.app.audio.AudioTuning
 import com.mcarplay.app.audio.CarLifeAudioBridge
 import com.mcarplay.app.audio.CarLifeMicrophoneBridge
+import com.mcarplay.app.audio.CarLifePromptBuffer
 import com.mcarplay.app.audio.ConnectionAudioPrefs
 import com.mcarplay.app.bt.AutoConnectPrefs
 import com.mcarplay.app.bt.BluetoothBringupGrace
@@ -351,6 +354,18 @@ object SessionController {
         }
         // 用户/车机主动按播放：解除观察窗口，别把它当成“自行开始”再暂停。
         if (isPlayKey) autoPlaySuppressor.disarm()
+        when (keyCode) {
+            KeyEvent.KEYCODE_MEDIA_PLAY -> resourceAudioIntent.userPlayback(true)
+            KeyEvent.KEYCODE_MEDIA_PAUSE, KeyEvent.KEYCODE_MEDIA_STOP -> resourceAudioIntent.userPlayback(false)
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE ->
+                resourceAudioIntent.userPlayback(
+                    !(
+                        MediaSessionsState.nowPlaying?.playing
+                            ?: resourceAudioIntent.media
+                    ),
+                )
+        }
+        queueAudioResources()
         val hardKey = CarLifeProtocol.hardKeyFor(keyCode)
         if (hardKey != null && currentCarLifeSession?.sendHardKey(hardKey) == true) {
             appendLog("EVENT: 车机媒体键（$source）→ CarWith 硬按键 $hardKey")
@@ -609,6 +624,8 @@ object SessionController {
             when (owner) {
                 CarLifeSessionRegistry.Owner.FORMAL -> {
                     formalCarLifeSession = session
+                    resourceAudioIntent.reset(MediaSessionsState.accessGranted && MediaSessionsState.nowPlaying?.playing == true)
+                    promptPreroll.clear()
                     appContext?.let { metadataRelay.start(it, session) }
                 }
                 CarLifeSessionRegistry.Owner.DIAGNOSTIC -> diagnosticCarLifeSession = session
@@ -662,6 +679,128 @@ object SessionController {
     /** Active bridge from CarWith's native media/TTS channels into CarPlay. */
     @Volatile
     private var nativeAudioBridge: CarLifeAudioBridge? = null
+    private val resourceAudioIntent = CarPlayAudioIntent()
+    private val promptPreroll = CarLifePromptBuffer()
+
+    @Volatile private var audioResources: AudioResourceStreams? = null
+    private var audioResourceTicker: java.util.concurrent.ScheduledFuture<*>? = null
+    private val audioResourcePending =
+        java.util.concurrent.atomic
+            .AtomicBoolean(false)
+
+    private fun queueAudioResources() {
+        val resources = audioResources ?: return
+        if (!audioResourcePending.compareAndSet(false, true)) return
+        controlActions.execute {
+            audioResourcePending.set(false)
+            if (audioResources === resources) {
+                runCatching { resources.reconcile() }
+                    .onFailure { appendLog("RESOURCE-AUDIO: reconciliation failed; next attempt remains bounded") }
+            }
+        }
+    }
+
+    private fun installAudioResources(client: AirPlayClient) {
+        val epoch = client.connectionGeneration
+        val source = currentCarLifeSession ?: return
+
+        fun current() =
+            !connectCancelled &&
+                currentClient === client &&
+                currentCarLifeSession === source &&
+                client.isConnectionCurrent(epoch) &&
+                client.sessionActive
+        val resources =
+            AudioResourceStreams(
+                current = ::current,
+                modes = client.modes,
+                intent = resourceAudioIntent,
+                enabled = { audioEnabledForSession },
+                acquire = { priority, temporary -> client.acquireAudioResource(priority, temporary, epoch) },
+                release = { client.teardownOutputAudio(epoch) && client.releaseAudioBorrow(epoch) },
+                switchOutput = { owned ->
+                    if (!current()) {
+                        false
+                    } else if (owned) {
+                        val context = appContext
+                        val cleanupReady = audioSender?.isRunning == true || client.teardownOutputAudio(epoch)
+                        val started =
+                            cleanupReady &&
+                                (
+                                    audioSender?.isRunning == true ||
+                                        (
+                                            context != null &&
+                                                startAudioChannel(
+                                                    context,
+                                                    client,
+                                                    currentSharedSecret,
+                                                    currentAudioHost,
+                                                    resourceAlreadyAcquired = true,
+                                                )
+                                        )
+                                )
+                        val currentOwned = started && current() && client.modes.phoneOwnsAudio && !client.modes.recognizingSpeech
+                        if (currentOwned && client.record(expectedEpoch = epoch)) {
+                            val now = SystemClock.uptimeMillis()
+                            val buffered = promptPreroll.drain(now)
+                            buffered.groupBy { it.first }.forEach { (channel, frames) ->
+                                val duration =
+                                    frames
+                                        .sumOf { (_, pcm) ->
+                                            pcm.littleEndian.size.toLong() * 1000 / (pcm.sampleRate * pcm.channels * 2)
+                                        }.coerceAtMost(1500)
+                                resourceAudioIntent.prompt(channel.name, now + duration)
+                            }
+                            buffered.forEach { (channel, event) -> nativeAudioBridge?.submit(channel, event) }
+                            true
+                        } else {
+                            stopResourceAudio(client, epoch)
+                            false
+                        }
+                    } else {
+                        !stopResourceAudio(client, epoch)
+                    }
+                },
+                mediaCommand = { command ->
+                    if (current()) {
+                        when (command) {
+                            CarPlayAudioIntent.MediaCommand.PAUSE -> dispatchMediaKey(KeyEvent.KEYCODE_MEDIA_PAUSE)
+                            CarPlayAudioIntent.MediaCommand.RESUME -> dispatchMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY)
+                            CarPlayAudioIntent.MediaCommand.NONE -> Unit
+                        }
+                    }
+                },
+                now = { SystemClock.uptimeMillis() },
+                log = ::appendLog,
+            )
+        audioResources?.close()
+        audioResourceTicker?.cancel(false)
+        audioResources = resources
+        audioResourceTicker =
+            controlActions.scheduleWithFixedDelay({
+                if (audioResources === resources) {
+                    runCatching { resources.reconcile() }.onFailure {
+                        appendLog("RESOURCE-AUDIO: reconciliation failed; next attempt remains bounded")
+                    }
+                }
+            }, 0, 250, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+
+    private fun stopResourceAudio(
+        client: AirPlayClient,
+        epoch: Long,
+    ): Boolean {
+        if (currentClient !== client || !client.isConnectionCurrent(epoch)) return false
+        nativeAudioBridge?.stop()
+        nativeAudioBridge = null
+        audioSender?.stop()
+        audioSender = null
+        activeAudioProfile = null
+        activeAudioStartedAt = 0L
+        val retired = runCatching { client.teardownOutputAudio(epoch) }.getOrDefault(false)
+        appendLog("RESOURCE-AUDIO: output stopped teardownAccepted=$retired; screen/control/microphone retained")
+        return retired
+    }
 
     /**
      * 音频「存活窗口」（ms）：超过它才认为该档位可用。
@@ -1082,7 +1221,35 @@ object SessionController {
                     if (attempt != null && event is CarLifeAudioEvent.Pcm) {
                         ConnectionDiagnostics.timeline.media(attempt, false, event.littleEndian.size)
                     }
-                    nativeAudioBridge?.submit(channel, event)
+                    val now = SystemClock.uptimeMillis()
+                    val changed =
+                        if (channel == com.mcarplay.app.carlife.CarLifeChannel.MEDIA) {
+                            when (event) {
+                                is CarLifeAudioEvent.Init -> {
+                                    resourceAudioIntent.beginMediaStream()
+                                    false
+                                }
+                                is CarLifeAudioEvent.Pcm -> resourceAudioIntent.observeMedia(true)
+                                is CarLifeAudioEvent.Stop -> resourceAudioIntent.observeMedia(false)
+                            }
+                        } else {
+                            if (event is CarLifeAudioEvent.Init || event is CarLifeAudioEvent.Pcm) {
+                                resourceAudioIntent.prompt(channel.name, now, starting = event is CarLifeAudioEvent.Init)
+                            }
+                            event !is CarLifeAudioEvent.Pcm
+                        }
+                    if (changed) queueAudioResources()
+                    val client = currentClient
+                    val allowed =
+                        client?.modes?.phoneOwnsAudio == true &&
+                            !client.modes.recognizingSpeech &&
+                            (channel != com.mcarplay.app.carlife.CarLifeChannel.MEDIA || resourceAudioIntent.media)
+                    val bridge = nativeAudioBridge
+                    if (allowed && bridge != null) {
+                        bridge.submit(channel, event)
+                    } else if (event is CarLifeAudioEvent.Pcm && audioEnabledForSession) {
+                        promptPreroll.offer(channel, event, now)
+                    }
                 },
                 log = { line -> appendLog(line) },
                 requestedVideoSize = requestedVideoSize,
@@ -1102,6 +1269,8 @@ object SessionController {
                 onReturnToCar = onReturnToCar@{
                     if (currentCarLifeSession !== session) return@onReturnToCar
                     val client = currentClient ?: return@onReturnToCar
+                    resourceAudioIntent.onCarAudioTransfer(com.mcarplay.app.airplay.ModeArbiter.CarAudioTransfer.TAKEN_PERMANENTLY)
+                    queueAudioResources()
                     val note = client.modes.onUserReturnedToCar()
                     enqueueModesAssert(client, "CarWith 返回车机（→ $note）", requestKeyFrame = false)
                 },
@@ -1513,6 +1682,12 @@ object SessionController {
         closeClient: Boolean = true,
         preserveScreenSocket: Boolean = false,
     ) {
+        audioResources?.close()
+        audioResources = null
+        audioResourceTicker?.cancel(false)
+        audioResourceTicker = null
+        promptPreroll.clear()
+        resourceAudioIntent.reset()
         voiceKeyRouter.reset()
         microphoneBridge.stop()
         metadataRelay.stop()
@@ -1558,64 +1733,10 @@ object SessionController {
     }
 
     /** 会话已建立且投影就绪、但音频尚未启动时，动态补启（投影授权晚于连接的场景）。 */
-    @Synchronized
     fun maybeStartAudioNow(context: Context) {
-        val client =
-            currentClient ?: run {
-                appendLog("MODE: 已启用声音（当前无会话，下次连接时接入）")
-                return
-            }
-        if (client.sessionStopping) {
-            appendLog("AUDIO: 会话正在结束——跳过动态开启声音")
-            return
-        }
-        if (!client.sessionActive || videoSender?.isRunning != true) {
-            appendLog("AUDIO: 声音选择已保存，待主会话激活后接入")
-            return
-        }
-        val secret = currentSharedSecret
-        if (secret == null) {
-            appendLog("MODE: 明文会话（未配对）无共享密钥——不补启音频")
-            return
-        }
-        if (audioSender?.isRunning == true) return
-        appendLog("MODE: 会话进行中，动态补启音频通道…")
-        startAudioAndRecord(context, client, secret, currentAudioHost, "AUDIO: 动态加入音频流——检查会话激活")
-    }
-
-    /** 启动音频并在成功后补 RECORD；连接、动态补启和仲裁重试三条入口共用。 */
-    private fun startAudioAndRecord(
-        context: Context,
-        client: AirPlayClient,
-        secret: ByteArray?,
-        host: String?,
-        logLine: String,
-    ): Boolean {
-        if (currentClient !== client || !client.sessionActive || client.sessionStopping) return false
-        val started = startAudioChannel(context, client, secret, host)
-        if (started) {
-            appendLog(logLine)
-            client.record()
-        }
-        return started
-    }
-
-    /**
-     * claim 因车机约束被拒后，`changeModes` 归还主音频时重试一次音频通道。
-     * 只由 [ModeArbiter.consumeAudioClaimRetry] 触发；仍受音频开关、会话代次和发送器状态约束。
-     */
-    private fun retryAudioAfterClaimReturned(client: AirPlayClient) {
-        // 只把状态检查放在短临界区里；SETUP 最长数秒，不能占着会话锁（disconnect 是
-        // @Synchronized，UI 线程点“断开”会跟着卡住）。
-        val ready =
-            synchronized(this) {
-                if (client !== currentClient || client.sessionStopping || !audioEnabledForSession) return
-                if (audioSender?.isRunning == true) return
-                val context = appContext ?: return
-                val secret = currentSharedSecret ?: return
-                Triple(context, secret, currentAudioHost)
-            }
-        startAudioAndRecord(ready.first, client, ready.second, ready.third, "AUDIO: 车机归还主音频后音频流已建立——检查会话激活")
+        appContext = context.applicationContext
+        appendLog("RESOURCE-AUDIO: 声音选择已保存，按播放意图和资源归属对齐")
+        queueAudioResources()
     }
 
     /**
@@ -2553,6 +2674,7 @@ object SessionController {
         client: AirPlayClient,
         sharedSecret: ByteArray?,
         host: String?,
+        resourceAlreadyAcquired: Boolean = false,
     ): Boolean {
         val connectionGeneration = client.connectionGeneration
         if (!client.isConnectionCurrent(connectionGeneration)) return false
@@ -2620,8 +2742,13 @@ object SessionController {
             )
             // 真 iPhone 在 Main audio setting up 之前先报 mainAudio controller；车机持有
             // 或借用主音频时直接 SETUP 会被 VW4131 以 400 拒绝，不能误判成三档格式都不兼容。
-            val audioClaim = client.claimMainAudioForStreaming(connectionGeneration)
-            if (!audioClaim.claimed) {
+            val audioClaim =
+                if (resourceAlreadyAcquired) {
+                    AirPlayClient.MainAudioClaim("资源工作线程已确认", client.modes.phoneOwnsAudio, client.modes.phoneOwnsAudio)
+                } else {
+                    client.claimMainAudioForStreaming(connectionGeneration)
+                }
+            if (!audioClaim.claimed || !audioClaim.announced) {
                 // 车机以高于 userInitiated 的约束持有/借用主音频（如倒车提示音）：不抢、不发 SETUP，
                 // 否则三档 400 会被写成格式失败记忆；等 changeModes 归还后再重试。
                 appendLog("AUDIO: 主音频资源未接管（${audioClaim.note}）——本次不发送 SETUP，等车机归还主音频后重试")
@@ -2686,6 +2813,13 @@ object SessionController {
                     // 同步包目标端口：车机在 SETUP 应答里下发。缺了它就没有 RTP↔NTP 锚点，
                     // 接收端只能「按到达时刻猜」，严格的实现干脆不排播（2026-10-20 实测）。
                     controlPort = audio.controlPort,
+                    outputAllowed = {
+                        currentClient === client &&
+                            client.isConnectionCurrent(connectionGeneration) &&
+                            audioEnabledForSession &&
+                            client.modes.phoneOwnsAudio &&
+                            !client.modes.recognizingSpeech
+                    },
                     onPacketSent = { diagnosticAttempt?.let { ConnectionDiagnostics.timeline.audioPacket(it) } },
                 )
             startingSender = sender
@@ -3117,7 +3251,7 @@ object SessionController {
      * 触摸/iAP 消息（2026-11-01 审查）。密集请求合并：已有一条待执行时不再排队。
      */
     private val controlActions =
-        java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+        java.util.concurrent.Executors.newSingleThreadScheduledExecutor { runnable ->
             Thread(runnable, "carplay-control-actions").apply { isDaemon = true }
         }
 
@@ -3299,7 +3433,7 @@ object SessionController {
         val streaming = !connectCancelled && !sessionStarting.get() && videoSender?.isRunning == true
         if (!streaming) return
         if (client.isMercedesReceiver() && !client.modes.phoneOwnsScreen) {
-            enqueueMercedesScreenReturn(client, fromRequestUi = false)
+            enqueueScreenReturn(client, fromRequestUi = false)
             return
         }
         val now = android.os.SystemClock.uptimeMillis()
@@ -3338,7 +3472,7 @@ object SessionController {
     private var pendingScreenReturn: ScreenReturnAction? = null
 
     /** Same control worker as changeModes. A car invitation requests ownership, never a blind session rebuild. */
-    private fun enqueueMercedesScreenReturn(
+    private fun enqueueScreenReturn(
         client: AirPlayClient,
         fromRequestUi: Boolean,
     ) {
@@ -3362,12 +3496,27 @@ object SessionController {
                 appendLog("SCREEN: 奔驰新邀请未解除主屏借用/高约束，保持原车画面")
                 return@execute
             }
+            val preview = client.modes.screenRequest()
+            if (explicitUi && !preview.allowed) return@execute
+            if (explicitUi && preview.retake && !client.isMercedesReceiver()) {
+                if (!client.assertModes(releaseScreen = true, expectedEpoch = epoch)) return@execute
+            }
             val acquired = client.acquireScreenResource(explicitUi, epoch)
-            appendLog("SCREEN: 奔驰取回主屏 fromRequestUi=$explicitUi acquired=$acquired ${client.modes.describe()}")
+            appendLog("RESOURCE-SCREEN: 取回主屏 fromRequestUi=$explicitUi acquired=$acquired ${client.modes.describe()}")
             if (!acquired || connectCancelled || currentClient !== client || !client.isConnectionCurrent(epoch)) return@execute
-            if (screenResourceStreams?.reconcile() == false || !client.modes.phoneOwnsScreen) return@execute
+            if (screenResourceStreams?.reconcile(
+                    forceRebuild =
+                        explicitUi &&
+                            !client.isMercedesReceiver() &&
+                            PassatReturnPolicy.rebuildStream(passatReturnStrategy(), preview.rebuildStream),
+                ) == false ||
+                !client.modes.phoneOwnsScreen
+            ) {
+                return@execute
+            }
             videoSender?.reprimeOnNextKeyFrame()
             videoSender?.requestKeyFrame(fromReceiver = false)
+            if (!client.isMercedesReceiver()) scheduleTakeBackCheck(client, "确认主屏资源后恢复", false)
         }
     }
 
@@ -4104,35 +4253,17 @@ object SessionController {
                                     }
 
                                     "changeModes" -> {
+                                        if (!client.modes.phoneOwnsAudio) currentCarLifeSession?.let(microphoneBridge::stop)
                                         // 车机请求资源（如用户回原车主界面时 take 主屏）：按请求更新归属后如实回 modesChanged。
                                         // 旧实现一律回「手机持有」，帕萨特回主界面后再点图标就切不回 CarPlay（2026-11-01 22:47）
                                         val note = client.modes.describe() // 已在原事件应答前完成仲裁，不能重复处理 borrow/unborrow
                                         enqueueModesAssert(client, "车机请求 changeModes（→ $note）", requestKeyFrame = false)
-                                        if (client.modes.consumeAudioClaimRetry()) {
-                                            appendLog("AUDIO: 车机已归还主音频——后台重试建立音频流")
-                                            Bg.run("audio-claim-retry") { retryAudioAfterClaimReturned(client) }
-                                        }
+                                        queueAudioResources()
                                     }
 
                                     "requestUI" -> {
-                                        if (client.isMercedesReceiver()) {
-                                            requestUiCount++
-                                            enqueueMercedesScreenReturn(client, fromRequestUi = true)
-                                            return@onEvent
-                                        }
-                                        // 用户在原生菜单点 CarPlay 图标（帕萨特 2025 / VW4211 实测：每点一次一条，
-                                        // 无 params）。事件层已回 RTSP 200，但旧实现不做业务处理（不回 modesChanged），
-                                        // 车机始终停在原生界面。与 changeModes 同样回 modesChanged 接管主屏，
-                                        // 并补一个 I 帧，让车机切屏后马上有可解码的画面。
                                         requestUiCount++
-                                        val request = client.modes.onUserRequestedUi()
-                                        enqueueModesAssert(
-                                            client,
-                                            "车机 requestUI（用户点了 CarPlay 图标，第 $requestUiCount 次；${request.note}）",
-                                            requestKeyFrame = request.allowed,
-                                            retakeScreen = request.retake,
-                                            rebuildStream = PassatReturnPolicy.rebuildStream(passatReturnStrategy(), request.rebuildStream),
-                                        )
+                                        enqueueScreenReturn(client, fromRequestUi = true)
                                     }
 
                                     else ->
@@ -4401,12 +4532,11 @@ object SessionController {
                                             )
                                         }
                                 }
-                                val startup =
-                                    client.configureStartup(
-                                        MercedesStartup
-                                            .mode(context),
-                                    )
-                                val audioBeforeRecord = startup.audioFirst && startAudioChannel(context, client, sessionKey, host)
+                                client.configureStartup(
+                                    MercedesStartup
+                                        .mode(context),
+                                )
+                                // Audio is now activated by playback intent after screen activation, on the shared resource worker.
                                 if (wasCancelled() || client.sessionStopping || currentClient !== client) return@run
                                 // 先 RECORD 激活会话并起视频，再协商音频（2026-10-17 奥迪定谳）：
                                 // 车机在「屏幕流 SETUP 之后」有约 2s 看门狗，等不到 RECORD/数据流即
@@ -4467,28 +4597,7 @@ object SessionController {
                                 }
                                 // 音频通道（可选）：SETUP type=100 → UDP RTP 推流。
                                 // 会话已激活（RECORD 完成）后再协商；失败不影响视频主链路。
-                                val audioStarted =
-                                    audioBeforeRecord ||
-                                        (
-                                            !startup.audioFirst &&
-                                                startAudioAndRecord(
-                                                    context,
-                                                    client,
-                                                    sessionKey,
-                                                    host,
-                                                    // 奥迪曾需流后补发；受影响车机由客户端策略跳过重复 RECORD。
-                                                    "AUDIO: 音频流已加入——检查会话激活",
-                                                )
-                                        )
-                                // 主音频被车机约束占用时的“未启动”不是音频故障：不写结论码，
-                                // 否则它会长期盖住后续真正需要的诊断（如屏幕暂停）。
-                                if (audioEnabledForSession &&
-                                    !audioStarted &&
-                                    !client.modes.audioClaimAwaitingReturn &&
-                                    client.modes.phoneOwnsAudio
-                                ) {
-                                    ConnectionDiagnostics.timeline.issue(diagnosticAttempt, DiagnosticCode.AUDIO_UNAVAILABLE)
-                                }
+                                if (carLife?.isRunning == true) installAudioResources(client)
                             }
                         } else {
                             // 会话级 SETUP 被拒（典型：接收端按设备过滤回 403，见

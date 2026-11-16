@@ -52,8 +52,8 @@ internal class CarLifeMicrophoneBridge(
         if (active?.let { it.source === source && it.client === client && !it.cancelled } == true) return
         stop()
         // A second type100 stream can replace a receiver's active type100 output. Preserve working playback.
-        if (outputType != 102L) {
-            log("MIC: skipped; dedicated input currently requires active media type102")
+        if (outputType != null && outputType != 102L) {
+            log("MIC: skipped; input type100 would conflict with active output; keep existing audio")
             return
         }
         val profile =
