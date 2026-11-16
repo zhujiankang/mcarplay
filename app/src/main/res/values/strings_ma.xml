@@ -76,6 +76,7 @@
     <string name="ma_hero_stats">分辨率 %1$d%% · %2$d/%3$d fps</string>
     <string name="ma_hero_connecting">正在连接</string>
     <string name="ma_hero_connected">已连接</string>
+    <string name="ma_screen_returned_to_car">已连接 · 原车持有屏幕，等待返回 CarPlay</string>
     <string name="ma_hero_residual">上次会话异常退出，遗留 %1$d 个虚拟屏待清理</string>
     <string name="ma_cta_disconnect">断开连接</string>
     <string name="ma_connected_subline">已连接 · %1$s · %2$02d:%3$02d · 视频推流中</string>

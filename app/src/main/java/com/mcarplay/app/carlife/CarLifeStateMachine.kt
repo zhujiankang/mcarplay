@@ -11,6 +11,7 @@ class CarLifeStateMachine(
     private val authVerifier: CarLifeAuthVerifier?,
     private val seedExchange: CarLifeSeedExchange? = null,
     private val challengeFactory: () -> String = CarLifeAuthentication::newChallenge,
+    private val huInfoPayload: () -> ByteArray = { CarLifeProtocol.huInfoPayload() },
 ) : AutoCloseable {
     enum class State {
         CONNECTED,
@@ -109,7 +110,7 @@ class CarLifeStateMachine(
         authRequested = true
         state = State.AUTH_REQUESTED
         return listOf(
-            Action(CarLifeProtocol.HU_INFO, CarLifeProtocol.huInfoPayload()),
+            Action(CarLifeProtocol.HU_INFO, huInfoPayload()),
             Action(CarLifeProtocol.HU_AUTH_REQUEST, CarLifeProtocol.authRequestPayload(challenge)),
         )
     }

@@ -60,6 +60,8 @@ class VideoSender(
     private val onExternalFrameSent: ((Int) -> Unit)? = null,
     /** 车机 /info displays[0].maxFPS（0 = 未知）；只约束转码时的编码帧率。 */
     private val receiverMaxFps: Int = 0,
+    /** 正式桥接：源端不采纳车机比例时自动等比例转码；同尺寸/同比例继续透传。 */
+    private val fitExternalVideoToDisplay: Boolean = false,
     /**
      * 主屏此刻是否归手机。归车机时暂停全部视频帧；归还后等新的 IDR 再恢复。
      * 默认 true = 调用方未提供资源仲裁状态时不改变原行为。
@@ -104,6 +106,7 @@ class VideoSender(
 
     /** 转码只尝试一次：事件线程与控制动作线程都可能触发，原子认领。 */
     private val transcodeClaimed = AtomicBoolean(false)
+    private val fitTranscodePending = AtomicBoolean(false)
     private val keyFrameStorm = KeyFrameStorm()
     private val sustainedStormNoted = AtomicBoolean(false)
 
@@ -493,7 +496,10 @@ class VideoSender(
             ) {
                 // 建编码器 + EGL 最长数秒：不能占用车机事件读取线程（2026-11-01 审查），
                 // 后台只起这一次；准备期间关键帧请求仍转给 CarWith
-                Thread({ startTranscoding(storm) }, "video-transcode-start").apply {
+                Thread(
+                    { startTranscoding("车机${if (storm == KeyFrameStorm.Level.SUSTAINED) "持续" else "密集"}要关键帧") },
+                    "video-transcode-start",
+                ).apply {
                     isDaemon = true
                     start()
                 }
@@ -647,6 +653,22 @@ class VideoSender(
         width = sourceWidth
         height = sourceHeight
         cachedVideoConfig = null
+        if (fitExternalVideoToDisplay &&
+            VideoGeometry.aspectMismatch(sourceWidth, sourceHeight, streamWidth, streamHeight) &&
+            transcodeClaimed.compareAndSet(false, true)
+        ) {
+            fitTranscodePending.set(true)
+            Thread({
+                try {
+                    startTranscoding("源端未采纳车机比例，自动等比例适配")
+                } finally {
+                    fitTranscodePending.set(false)
+                }
+            }, "video-fit-start").apply {
+                isDaemon = true
+                start()
+            }
+        }
     }
 
     /**
@@ -655,7 +677,7 @@ class VideoSender(
      * 失败则保持透传。
      */
     @Synchronized
-    private fun startTranscoding(storm: KeyFrameStorm.Level) {
+    private fun startTranscoding(trigger: String) {
         if (!running.get() || quiescing.get()) return
         val fps = TranscodePolicy.cappedFps(targetFps, receiverMaxFps)
         val reason =
@@ -664,9 +686,8 @@ class VideoSender(
             } else {
                 "CarWith ${sourceWidth}x$sourceHeight 与车机流尺寸一致，"
             }
-        val cadence = if (storm == KeyFrameStorm.Level.SUSTAINED) "持续" else "密集"
         log(
-            "VIDEO: $reason" + "且车机${cadence}要关键帧（透传解不出画）——切换为手机端转码 ${streamWidth}x$streamHeight@$fps" +
+            "VIDEO: $reason$trigger——切换为等比例留边转码 ${streamWidth}x$streamHeight@$fps" +
                 "\n  ↳ 切换前透传统计：${streamStats.summary()}",
         )
         var codec: MediaCodec? = null
@@ -705,8 +726,12 @@ class VideoSender(
                 isDaemon = true
                 start()
             }
+            externalVideoSource?.requestKeyFrame()
         } catch (error: Exception) {
             log("VIDEO: 转码启动失败，保持透传 - ${error.message}")
+            // 自动适配准备时可能跳过了第一帧 IDR；回退后重新补齐配置与参数集。
+            reprimePending.set(true)
+            externalVideoSource?.requestKeyFrame()
         } finally {
             if (!published) releaseVideoResources(pipeline, codec, surface)
         }
@@ -724,6 +749,12 @@ class VideoSender(
                     // 门控已确认暂停后停止喂帧：解码/编码一场倒车影像的输入是纯功耗；
                     // 恢复时继续喂帧，由编码线程等新的 IDR 再放行输出。
                     if (frame != null && !screenFeedPaused()) pipeline.submit(frame)
+                    continue
+                }
+                // 自动适配准备期间不把已知比例错误的源帧送给车机；切换只尝试一次。
+                // pipeline 可能在上面快照之后发布，下一轮重新读取，避免漏出一帧旧比例视频。
+                if (fitTranscodePending.get() || transcoder != null) {
+                    maybeSendKeepAlive(output)
                     continue
                 }
                 if (frame == null) {

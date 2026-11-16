@@ -1,5 +1,7 @@
 package com.mcarplay.app.carlife
 
+import com.mcarplay.app.video.VideoGeometry
+
 enum class CarLifeTouchAction {
     DOWN,
     MOVE,
@@ -58,8 +60,19 @@ internal fun mapCarLifeTouch(
     sourceHeight: Int,
     targetWidth: Int,
     targetHeight: Int,
+    aspectFit: Boolean = false,
+    contentWidth: Int = targetWidth,
+    contentHeight: Int = targetHeight,
 ): Pair<Int, Int>? {
     if (sourceWidth <= 0 || sourceHeight <= 0 || targetWidth <= 0 || targetHeight <= 0) return null
+    if (aspectFit) {
+        if (contentWidth <= 0 || contentHeight <= 0) return null
+        val rect = VideoGeometry.fit(contentWidth, contentHeight, sourceWidth, sourceHeight)
+        if (x !in rect.x until rect.x + rect.width || y !in rect.y until rect.y + rect.height) return null
+        val mappedX = ((x - rect.x).toLong() * targetWidth / rect.width).toInt().coerceIn(0, targetWidth - 1)
+        val mappedY = ((y - rect.y).toLong() * targetHeight / rect.height).toInt().coerceIn(0, targetHeight - 1)
+        return mappedX to mappedY
+    }
     val mappedX = (x.toLong() * targetWidth / sourceWidth).toInt().coerceIn(0, targetWidth - 1)
     val mappedY = (y.toLong() * targetHeight / sourceHeight).toInt().coerceIn(0, targetHeight - 1)
     return mappedX to mappedY

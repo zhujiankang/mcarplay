@@ -22,14 +22,13 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * CarWith H.264 → 车机屏尺寸的手机端转码：硬解 → GL 拉伸 → 编码器输入 Surface。
+ * CarWith H.264 → 车机屏尺寸的手机端转码：硬解 → GL 等比例留边 → 编码器输入 Surface。
  *
  * 帕萨特 2025（VW4211，屏 1280×720、maxFPS 40）收到 CarWith 原样透传的 1920×1140 流后，
  * 每 ~300ms 要一次关键帧、始终不出画（2026-10-31 23:52/23:59 两轮）。CarWith 不采纳请求尺寸，
  * 也不响应「要关键帧」，只能由手机把画面缩到车机声明的尺寸再编码。
  *
- * 拉伸铺满而非加黑边：触摸按「车机屏 → CarWith 画面」等比映射（mapCarLifeTouch），
- * 两边都铺满时点击位置才对得上；1.68 → 1.78 的横向拉伸约 5%。
+ * 内容区域与触摸共用 VideoGeometry，留边不拉伸；点击黑边释放已有触摸。
  */
 internal class CarWithTranscoder(
     private val encoderSurface: Surface,
@@ -76,6 +75,12 @@ internal class CarWithTranscoder(
 
     @Volatile
     private var decoderFormat: String? = null
+
+    @Volatile
+    private var visibleWidth = sourceWidth
+
+    @Volatile
+    private var visibleHeight = sourceHeight
 
     /**
      * 单调递增的解码输入 / 编码展示时间。CarLife 时间戳以秒计（同秒几十帧同值），
@@ -253,7 +258,22 @@ internal class CarWithTranscoder(
                 if (info.size > 0) framesDecoded++
                 runCatching { codec.releaseOutputBuffer(index, info.size > 0) }
             } else if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                decoderFormat = runCatching { codec.outputFormat.toString() }.getOrNull()
+                val format = codec.outputFormat
+                decoderFormat = format.toString()
+                val width = format.getInteger(MediaFormat.KEY_WIDTH)
+                val height = format.getInteger(MediaFormat.KEY_HEIGHT)
+                visibleWidth =
+                    if (format.containsKey("crop-right") && format.containsKey("crop-left")) {
+                        format.getInteger("crop-right") - format.getInteger("crop-left") + 1
+                    } else {
+                        width
+                    }
+                visibleHeight =
+                    if (format.containsKey("crop-bottom") && format.containsKey("crop-top")) {
+                        format.getInteger("crop-bottom") - format.getInteger("crop-top") + 1
+                    } else {
+                        height
+                    }
                 log("VIDEO: 转码解码器输出格式 $decoderFormat")
             }
         }
@@ -316,6 +336,10 @@ internal class CarWithTranscoder(
             texture.updateTexImage()
             texture.getTransformMatrix(texMatrix)
             GLES20.glViewport(0, 0, outWidth, outHeight)
+            GLES20.glClearColor(0f, 0f, 0f, 1f)
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            val rect = VideoGeometry.fit(visibleWidth, visibleHeight, outWidth, outHeight)
+            GLES20.glViewport(rect.x, outHeight - rect.y - rect.height, rect.width, rect.height)
             GLES20.glUseProgram(program)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)

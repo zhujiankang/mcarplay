@@ -76,6 +76,7 @@
     <string name="ma_hero_stats">Resolution %1$d%% · %2$d/%3$d fps</string>
     <string name="ma_hero_connecting">Connecting</string>
     <string name="ma_hero_connected">Connected</string>
+    <string name="ma_screen_returned_to_car">Connected · Vehicle holds the display; waiting for CarPlay</string>
     <string name="ma_hero_residual">The last session ended abnormally and left %1$d virtual displays to clean up</string>
     <string name="ma_cta_disconnect">Disconnect</string>
     <string name="ma_connected_subline">Connected · %1$s · %2$02d:%3$02d · streaming video</string>

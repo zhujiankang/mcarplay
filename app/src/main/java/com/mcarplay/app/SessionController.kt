@@ -7,6 +7,7 @@ import android.view.KeyEvent
 import androidx.annotation.StringRes
 import com.mcarplay.app.airplay.AirPlayClient
 import com.mcarplay.app.airplay.PairVerifyClient
+import com.mcarplay.app.airplay.ScreenResourceStreams
 import com.mcarplay.app.audio.AudioDuckingPrefs
 import com.mcarplay.app.audio.AudioProfile
 import com.mcarplay.app.audio.AudioProfileMemory
@@ -550,9 +551,9 @@ object SessionController {
         CarLifePreroll()
 
     @Volatile
-    private var screenStreamRecovery: (() -> ScreenRecoveryResult)? = null
+    private var screenResourceStreams: ScreenResourceStreams? = null
 
-    private enum class ScreenRecoveryResult { RESTORED, ABORTED, FAILED }
+    val screenOutputPaused: Boolean get() = screenResourceStreams?.attached == false
 
     @Volatile
     private var disconnectCompletion: java.util.concurrent.CountDownLatch? = null
@@ -884,6 +885,7 @@ object SessionController {
     /** 会话是否活跃（推出流进程或 BT 任一在跑）。 */
     fun isSessionRunning(): Boolean =
         videoSender?.isRunning == true ||
+            screenResourceStreams != null ||
             (bluetoothServer?.isRunning == true && !discoveryOnly) ||
             bluetoothClient?.isRunning == true
 
@@ -944,7 +946,10 @@ object SessionController {
         context: Context,
         requestedSize: Pair<Int, Int>? = null,
     ): CarLifeSession? {
-        currentCarLifeSession?.takeIf { it.isRunning }?.let { return it }
+        currentCarLifeSession?.takeIf { it.isRunning }?.let {
+            requestedSize?.let(it::updateRequestedVideoSize)
+            return it
+        }
         if (connectCancelled || disconnectCompletion != null) return null
         currentCarLifeSession?.let {
             it.stop()
@@ -988,7 +993,14 @@ object SessionController {
                     synchronized(carLifeStreamLock) {
                         if (currentCarLifeSession === session) {
                             val output = carLifeOutput
-                            if (output == null) carLifePreroll.offer(unit) else submitCarLifeUnit(output, unit)
+                            if (output == null) {
+                                if (screenResourceStreams != null) {
+                                    streamingDiagnosticAttempt?.let { ConnectionDiagnostics.timeline.sourceFrame(it) }
+                                }
+                                carLifePreroll.offer(unit)
+                            } else {
+                                submitCarLifeUnit(output, unit)
+                            }
                         }
                     }
                 },
@@ -1000,6 +1012,15 @@ object SessionController {
                         appendLog("CARLIFE: 会话结束 - $reason")
                         nativeAudioBridge?.stop()
                         output.sender.stop()
+                    } else if (currentCarLifeSession === session && screenResourceStreams != null) {
+                        val client = currentClient
+                        val attempt = streamingDiagnosticAttempt
+                        val generation = endpointGeneration.get()
+                        if (client != null && attempt != null) {
+                            Bg.run("paused-source-ended") {
+                                endClientSession(client, generation, attempt, "主屏让出期间 CarWith 源端结束")
+                            }
+                        }
                     } else {
                         appendLog("CARLIFE: 未接入推流的旧会话结束 - $reason")
                     }
@@ -1022,6 +1043,7 @@ object SessionController {
                 },
                 log = { line -> appendLog(line) },
                 requestedVideoSize = requestedVideoSize,
+                waitForDisplaySize = requestedVideoSize == null,
                 launchStrategy = CarLifeLaunchStrategy.COMPATIBLE,
                 onReturnToCar = onReturnToCar@{
                     if (currentCarLifeSession !== session) return@onReturnToCar
@@ -1349,7 +1371,7 @@ object SessionController {
     @Synchronized
     internal fun beginEndpointAttempt(observation: ReceiverObservation?): Long? {
         if (discoverySuppressed || disconnectCompletion != null || !ReceiverDetectionRuntime.isCurrent(observation)) return null
-        if (videoSender?.isRunning == true || !sessionStarting.compareAndSet(false, true)) return null
+        if (videoSender?.isRunning == true || screenResourceStreams != null || !sessionStarting.compareAndSet(false, true)) return null
         connectCancelled = false
         bringupGrace.cancel()
         return endpointGeneration.incrementAndGet()
@@ -1438,7 +1460,8 @@ object SessionController {
         preserveScreenSocket: Boolean = false,
     ) {
         currentClient?.beginOrderlyStop()
-        screenStreamRecovery = null
+        screenResourceStreams?.close()
+        screenResourceStreams = null
         stopAutoPlayWatch()
         val retiringSender = videoSender
         videoSender = null
@@ -1549,7 +1572,7 @@ object SessionController {
         // Phase 1，2026-10-15 实测「连上后自动断开」循环的推手之一）：此时再走绑定
         // 流程会 release+重绑进程网络（扰动正在推流的 socket）、force 重注册 ctrl
         // mDNS（DiPlay 视为手机重新上线、再拉一轮 RFCOMM）。只刷新密码缓存。
-        if (videoSender?.isRunning == true) {
+        if (videoSender?.isRunning == true || screenResourceStreams != null) {
             lastWifiPsk = wifi.passphrase
             lastCarWifiSsid = wifi.ssid
             appendLog("0x5703 冗余凭据（会话推流中）——保持现有 WiFi 绑定与 ctrl 广播不变")
@@ -3175,22 +3198,12 @@ object SessionController {
             val asserted = client.assertModes(expectedEpoch = connectionGeneration)
             if (connectCancelled || currentClient !== client || !client.isConnectionCurrent(connectionGeneration)) return@execute
             val restoreScreen = request.requestKeyFrame && asserted && client.modes.phoneOwnsScreen
-            val recovery = screenStreamRecovery
-            if (restoreScreen && request.rebuildStream && recovery != null) {
-                when (recovery()) {
-                    ScreenRecoveryResult.ABORTED -> return@execute
-                    ScreenRecoveryResult.FAILED -> {
-                        synchronized(this) {
-                            if (!connectCancelled && !client.cancelled && currentClient === client) {
-                                appendLog("SCREEN: 主屏流恢复失败——结束本轮，等待用户重新连接")
-                                appContext?.let { disconnect(it, DiagnosticCode.VIDEO_CLOSED) }
-                            }
-                        }
-                        return@execute
-                    }
-                    ScreenRecoveryResult.RESTORED -> Unit
-                }
+            if (!asserted && client.modes.phoneOwnsScreen) {
+                appendLog("SCREEN: 主屏资源声明未确认——保留当前媒体流状态，等待下一次资源请求")
+                return@execute
             }
+            val resources = screenResourceStreams
+            if (resources != null && !resources.reconcile(forceRebuild = restoreScreen && request.rebuildStream)) return@execute
             if (connectCancelled ||
                 client.cancelled ||
                 currentClient !== client ||
@@ -3794,6 +3807,8 @@ object SessionController {
                             return@run
                         }
                         if (setup != null) {
+                            // 预热只准备入口与协议；拿到真实画布后才允许源端首轮视频 INIT。
+                            prepareCarLifeSource(context, CarLifeProtocol.videoRequestFor(setup.displayWidth, setup.displayHeight))
                             // 记录会话凭据：投影授权晚于连接时用于动态补启音频。
                             // 用 client.currentEndpoint 而非 effectiveEndpoint：配对期间
                             // mDNS 刷新过端点时，真正连上的是 client 里的地址（2026-10-18：
@@ -3891,6 +3906,10 @@ object SessionController {
                                             touchLogCount++
                                             val carLife = currentCarLifeSession
                                             if (carLife != null) {
+                                                if (!client.modes.phoneOwnsScreen) {
+                                                    carLife.releaseTouch()
+                                                    return@onEvent
+                                                }
                                                 val contact =
                                                     contacts.firstOrNull { it.slot == 0 }
                                                         ?: contacts.first()
@@ -3900,13 +3919,18 @@ object SessionController {
                                                         y = contact.yPixels,
                                                         sourceWidth = setup.displayWidth,
                                                         sourceHeight = setup.displayHeight,
-                                                        targetWidth = carLife.videoWidth,
-                                                        targetHeight = carLife.videoHeight,
+                                                        targetWidth = carLife.touchWidth,
+                                                        targetHeight = carLife.touchHeight,
+                                                        aspectFit = videoSender?.isTranscoding == true,
+                                                        contentWidth = carLife.videoWidth,
+                                                        contentHeight = carLife.videoHeight,
                                                     )
                                                 if (point != null) {
                                                     if (carLife.sendTouch(point.first, point.second, contact.down)) {
                                                         ReceiverDetectionRuntime.touch(client.currentEndpoint.observation)
                                                     }
+                                                } else {
+                                                    carLife.releaseTouch()
                                                 }
                                             }
                                         } else if (report != null) {
@@ -3956,7 +3980,7 @@ object SessionController {
                                     "changeModes" -> {
                                         // 车机请求资源（如用户回原车主界面时 take 主屏）：按请求更新归属后如实回 modesChanged。
                                         // 旧实现一律回「手机持有」，帕萨特回主界面后再点图标就切不回 CarPlay（2026-11-01 22:47）
-                                        val note = client.modes.onChangeModes(command["params"] as? Map<*, *>)
+                                        val note = client.modes.describe() // 已在原事件应答前完成仲裁，不能重复处理 borrow/unborrow
                                         enqueueModesAssert(client, "车机请求 changeModes（→ $note）", requestKeyFrame = false)
                                         if (client.modes.consumeAudioClaimRetry()) {
                                             appendLog("AUDIO: 车机已归还主音频——后台重试建立音频流")
@@ -4044,6 +4068,7 @@ object SessionController {
                                 var pendingVideoW = 0
                                 var pendingVideoH = 0
                                 var carLife: CarLifeSession? = null
+                                var screenResourcesFactory: ((CarLifeSession) -> ScreenResourceStreams)? = null
                                 lateinit var sessionVideoSender: VideoSender
                                 if (host != null) {
                                     // 「显示」偏好：流画布/虚拟屏按车机分辨率百分比生成。
@@ -4095,12 +4120,18 @@ object SessionController {
                                                 keepAliveWithStats = setup.keepAliveSendStatsAsBody,
                                                 externalVideoSource = carLifeSource,
                                                 receiverMaxFps = setup.maxFps,
+                                                fitExternalVideoToDisplay = true,
                                                 // 车机拿走主屏（原车界面、倒车影像等）时暂停屏幕视频，归还后从新的 IDR 恢复
                                                 phoneOwnsScreen = { client.modes.phoneOwnsScreen },
                                                 onScreenOutputSuspended = { suspended ->
-                                                    ConnectionDiagnostics.timeline.screenOutput(diagnosticAttempt, suspended)
+                                                    if (videoSender ===
+                                                        sender
+                                                    ) {
+                                                        ConnectionDiagnostics.timeline.screenOutput(diagnosticAttempt, suspended)
+                                                    }
                                                 },
                                                 onExternalFrameSent = { bytes ->
+                                                    if (videoSender !== sender) return@VideoSender
                                                     ConnectionDiagnostics.timeline.media(diagnosticAttempt, true, bytes)
                                                     val now = android.os.SystemClock.uptimeMillis()
                                                     if (lastEnvironmentSampleAt == 0L ||
@@ -4132,72 +4163,97 @@ object SessionController {
                                         endClientSession(client, generation, diagnosticAttempt, "视频数据口连接失败", sessionVideoSender)
                                         return@run
                                     }
-                                    screenStreamRecovery = recover@{
-                                        fun failure(): ScreenRecoveryResult =
-                                            if (wasCancelled() || client.cancelled || currentClient !== client) {
-                                                ScreenRecoveryResult.ABORTED
-                                            } else {
-                                                ScreenRecoveryResult.FAILED
-                                            }
-                                        val previousSender =
-                                            synchronized(this) {
-                                                val previousOutput = carLifeOutput ?: return@recover ScreenRecoveryResult.ABORTED
-                                                val previous = videoSender ?: return@recover ScreenRecoveryResult.ABORTED
-                                                if (wasCancelled() ||
-                                                    currentClient !== client ||
-                                                    previousOutput.sender !== previous ||
-                                                    currentCarLifeSession !== carLife ||
-                                                    !client.modes.phoneOwnsScreen
-                                                ) {
-                                                    return@recover ScreenRecoveryResult.ABORTED
-                                                }
-                                                carLifeOutput = null
-                                                videoSender = null
-                                                previous
-                                            }
-                                        appendLog("SCREEN: 回原车界面后的 requestUI——仅重建主屏流，保留 CarWith 与音频")
-                                        previousSender.stop()
-                                        if (wasCancelled() || !client.teardownScreenStream()) return@recover failure()
-                                        if (wasCancelled()) return@recover ScreenRecoveryResult.ABORTED
-                                        val resumed = client.runScreenStream(sessionKey, setup.displayUuid) ?: return@recover failure()
-                                        if (wasCancelled()) return@recover ScreenRecoveryResult.ABORTED
-                                        val replacement = newScreenSender(resumed)
-                                        var restored = false
-                                        try {
-                                            synchronized(this) {
-                                                if (wasCancelled() || currentClient !== client) return@recover ScreenRecoveryResult.ABORTED
-                                                videoSender = replacement
-                                            }
-                                            if (!replacement.openDataPort() ||
-                                                wasCancelled() ||
-                                                !client.record() ||
-                                                wasCancelled() ||
-                                                !replacement.start {} ||
-                                                wasCancelled()
-                                            ) {
-                                                return@recover failure()
-                                            }
-                                            synchronized(this) {
-                                                if (wasCancelled() || currentClient !== client || videoSender !== replacement) {
-                                                    return@recover ScreenRecoveryResult.ABORTED
-                                                }
-                                                carLifeOutput = CarLifeOutput(diagnosticAttempt, replacement)
-                                            }
-                                            client.modes.onScreenStreamRestored()
-                                            replacement.requestKeyFrame(fromReceiver = false)
-                                            restored = true
-                                            appendLog("SCREEN: 主屏流已重新 SETUP/RECORD，等待新的 IDR 与触控")
-                                            ScreenRecoveryResult.RESTORED
-                                        } finally {
-                                            if (!restored) {
-                                                synchronized(this) {
-                                                    if (videoSender === replacement) videoSender = null
-                                                    if (carLifeOutput?.sender === replacement) carLifeOutput = null
-                                                }
-                                                replacement.stop()
-                                            }
+                                    screenResourcesFactory =
+
+                                        fun(source: CarLifeSession): ScreenResourceStreams {
+                                            val controlEpoch = client.connectionGeneration
+
+                                            fun isCurrent(): Boolean =
+                                                !wasCancelled() &&
+                                                    !client.cancelled &&
+                                                    currentClient === client &&
+                                                    currentCarLifeSession === source &&
+                                                    client.isConnectionCurrent(controlEpoch)
+
+                                            return ScreenResourceStreams(
+                                                isCurrent = ::isCurrent,
+                                                phoneOwnsScreen = { client.modes.phoneOwnsScreen },
+                                                retireScreen = retire@{
+                                                    if (!isCurrent()) return@retire false
+                                                    val previous =
+                                                        synchronized(this) {
+                                                            if (!isCurrent()) return@retire false
+                                                            val old = videoSender
+                                                            carLifeOutput = null
+                                                            videoSender = null
+                                                            old
+                                                        }
+                                                    source.releaseTouch()
+                                                    ConnectionDiagnostics.timeline.screenOutput(diagnosticAttempt, true)
+                                                    appendLog("SCREEN: 让出主屏——退役屏幕流，保留 CarWith、音频与控制会话")
+                                                    previous?.stop()
+                                                    isCurrent() && client.teardownScreenStream()
+                                                },
+                                                restoreScreen = recover@{
+                                                    fun failure(): ScreenResourceStreams.RestoreResult =
+                                                        if (!isCurrent()) {
+                                                            ScreenResourceStreams.RestoreResult.ABORTED
+                                                        } else {
+                                                            ScreenResourceStreams.RestoreResult.FAILED
+                                                        }
+                                                    if (!isCurrent() || !client.modes.phoneOwnsScreen) {
+                                                        return@recover ScreenResourceStreams.RestoreResult.ABORTED
+                                                    }
+                                                    val resumed =
+                                                        client.runScreenStream(sessionKey, setup.displayUuid) ?: return@recover failure()
+                                                    if (!isCurrent()) return@recover ScreenResourceStreams.RestoreResult.ABORTED
+                                                    val replacement = newScreenSender(resumed)
+                                                    var restored = false
+                                                    try {
+                                                        synchronized(this) {
+                                                            if (!isCurrent()) return@recover ScreenResourceStreams.RestoreResult.ABORTED
+                                                            videoSender = replacement
+                                                        }
+                                                        if (!replacement.openDataPort() ||
+                                                            !isCurrent() ||
+                                                            !client.record() ||
+                                                            !isCurrent() ||
+                                                            !replacement.start {} ||
+                                                            !isCurrent()
+                                                        ) {
+                                                            return@recover failure()
+                                                        }
+                                                        synchronized(this) {
+                                                            if (!isCurrent() || videoSender !== replacement) {
+                                                                return@recover ScreenResourceStreams.RestoreResult.ABORTED
+                                                            }
+                                                            // 只接恢复后的新 IDR，不回放原车界面期间的旧缓存。
+                                                            synchronized(carLifeStreamLock) {
+                                                                carLifePreroll.clear()
+                                                                carLifeOutput = CarLifeOutput(diagnosticAttempt, replacement)
+                                                            }
+                                                        }
+                                                        client.modes.onScreenStreamRestored()
+                                                        replacement.reprimeOnNextKeyFrame()
+                                                        replacement.requestKeyFrame(fromReceiver = false)
+                                                        restored = true
+                                                        appendLog("SCREEN: 主屏流已重新 SETUP/RECORD，等待新的 IDR 与触控")
+                                                        ScreenResourceStreams.RestoreResult.RESTORED
+                                                    } finally {
+                                                        if (!restored) {
+                                                            synchronized(this) {
+                                                                if (videoSender === replacement) videoSender = null
+                                                                if (carLifeOutput?.sender === replacement) carLifeOutput = null
+                                                            }
+                                                            replacement.stop()
+                                                        }
+                                                    }
+                                                },
+                                                onFailure = { reason ->
+                                                    if (isCurrent()) endClientSession(client, generation, diagnosticAttempt, reason)
+                                                },
+                                            )
                                         }
-                                    }
                                 }
                                 val startup =
                                     client.configureStartup(
@@ -4252,6 +4308,9 @@ object SessionController {
                                         appendLog("MODE: CarWith 自检正在占用 CarWith，本次 CarPlay 不启动视频桥接")
                                     }
                                     if (carLifeStarted) {
+                                        screenResourceStreams = createdCarLife?.let { screenResourcesFactory?.invoke(it) }
+                                        // 启动期间可能已经收到车机接管；按最新归属完成主屏流对齐。
+                                        enqueueModesAssert(client, "主屏资源生命周期已挂载", requestKeyFrame = client.modes.phoneOwnsScreen)
                                         appendLog("SCREEN: CarWith 尚未收到首帧，保持手机可见以完成原厂连接")
                                     } else {
                                         stopAutoPlayWatch()
@@ -4307,7 +4366,7 @@ object SessionController {
                     // 配对未成功建立推流（fail/异常/start 失败提前退出）时解除静默降噪，
                     // 否则 BT-C 会永久停在门闸外、连真车路径失效。
                     // 推流活跃时保持关闭，由 VideoSender.onEnded（推流终止）负责解除。
-                    if (ownsConnection() && videoSender?.isRunning != true) {
+                    if (ownsConnection() && videoSender?.isRunning != true && screenResourceStreams == null) {
                         synchronized(this) {
                             if (!ownsConnection()) return@run
                             ConnectionDiagnostics.timeline.abandon(diagnosticAttempt, wasCancelled())

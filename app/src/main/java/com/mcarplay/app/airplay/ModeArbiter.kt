@@ -168,6 +168,26 @@ internal class ModeArbiter {
             )
         }
 
+    /** 事件应答与主动 modesChanged 使用同一份仲裁快照，避免两个通道报告不同归属。 */
+    @Synchronized
+    fun parameters(releaseScreen: Boolean = false): Map<String, Any?> =
+        linkedMapOf(
+            "appStates" to
+                listOf(
+                    linkedMapOf<String, Any?>("appStateID" to 2L, "entity" to 0L),
+                    linkedMapOf<String, Any?>("appStateID" to 3L, "entity" to 0L),
+                    linkedMapOf<String, Any?>("appStateID" to 1L, "entity" to 0L, "speechMode" to -1L),
+                ),
+            "resources" to resourcesPayload(releaseScreen),
+        )
+
+    /** 在事件线程内完成仲裁并生成应答，不执行 SETUP/TEARDOWN 等网络等待。 */
+    @Synchronized
+    fun changeResponse(params: Map<*, *>?): Map<String, Any?> {
+        onChangeModes(params)
+        return linkedMapOf("status" to 0L, "params" to parameters())
+    }
+
     @Synchronized
     fun describe(): String =
         resources.entries.joinToString(" ") { (id, resource) ->

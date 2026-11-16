@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — mercedes-carlife (0.1.9)
+
+Validation: standard 953 + remote bridge 24 tests passed, Spotless/lint/debug build and same-certificate APK verification passed. Vehicle acceptance is pending.
+
+English: Return resource arbitration in the original changeModes response; retire and recreate only the screen stream on vehicle Home/CarPlay return. Scope single RECORD to each screen activation and isolate late responses. Defer source video INIT until the receiver canvas arrives, request native resolution, and add an aspect-preserving hardware-transcode fallback with matching touch geometry. User testing of 0.1.8 confirmed CarWith picture on a 2024 Mercedes GLC260 but exposed return/freeze/geometry failures. 0.1.9 vehicle validation is pending; the separate native crash and network iAP2 ACK failure remain unresolved.
+
+简体中文：在 changeModes 原请求应答中返回仲裁结果，返回原车/重新进入 CarPlay 时仅退役与重建屏幕流。单次 RECORD 按屏幕激活周期隔离，阻止迟到响应误激活新流。源端视频 INIT 等待真实车机画布，申请原生分辨率，增加等比例硬件转码回退与一致的触摸映射。用户 0.1.8 实测确认奔驰 GLC260 2024 显示 CarWith，同时暴露返回、停帧与比例问题。0.1.9 尚待实车验证；独立 native 崩溃和网络 iAP2 ACK 失败仍未解决。
+
 ## Unreleased — mercedes-carlife (0.1.8)
 
 English: Parse DETECT incrementally and respond to the first valid marker; isolate connection ownership during Bluetooth/Wi-Fi handoff and terminal cleanup. Prepare the CarLife source before RECORD with bounded GOP preroll, preserve the audio choice on automatic starts, and add identity-scoped Mercedes startup experiments. Vehicle validation is pending.

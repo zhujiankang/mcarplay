@@ -6,6 +6,8 @@
 
 ## 当前基线与结论
 
+- **11 月 16 日奔驰屏幕生命周期与显示适配候选 `0.1.9-debug`（`mercedes-carlife`，未发布）：** 在原事件应答返回资源仲裁，按归属退役/重建主屏流，保留源、音频和控制通道；按屏幕 SETUP 周期管理 RECORD。预热源等待车机画布后首轮初始化，增加原生尺寸请求与比例不一致时的一次硬件转码留边回退，统一触摸坐标。新增事件 TCP、屏幕恢复、激活代数、尺寸时序与几何测试。完整 standard 953 项、remote bridge 24 项均 0 失败/错误/跳过；Spotless、standard lint/debug 构建和同证书签名校验通过。本轮实车验收待用户完成，见 `docs/MERCEDES-CARLIFE-0.1.9.md`；0.1.8 已有用户出画证据，但 native 崩溃与网络 iAP2 ACK 问题仍待定位。
+
 - **11 月 16 日奔驰通信修复候选 `0.1.8-debug`（`mercedes-carlife`，未发布）：** 修复首次 DETECT 回应、增量解析及交接/旧回调隔离，统一媒体/控制终态，增加有界 GOP 预热与声音偏好保留。奔驰 `MB_D-M-5` 默认使用一次激活实验策略，可切换原顺序或音频优先；没有新实车验收。完整 standard 933 项、remote bridge 24 项均 0 失败/错误/跳过；Spotless、standard lint 和 debug APK 构建通过。测试方式见 `docs/MERCEDES-CARLIFE-0.1.8.md`。
 
 - **奔驰 CarLife 实验分支 `mercedes-carlife`（0.1.7-debug，未发布）：** 按用户更正的目标从 main `ab0cb938` 开始，保留原 Carlink 分支。对照 CarPToCarL 1.2.51，补提前公告、可选 Wireless iAP v2 占位探针、配对状态门控和 60 秒回连窗口。基础 CarPlay UUID 原已存在，未重复注册；未将占位服务当作真实 iAP2 通道。新增 10 项回归测试；完整 standard 909 项、remote bridge 24 项均 0 失败/错误/跳过，Spotless、standard lint 和 debug APK 构建通过。没有新增实车成功证据。详见 `docs/CARPTOCARL-MERCEDES-CARLIFE-REVIEW.zh-CN.md`。

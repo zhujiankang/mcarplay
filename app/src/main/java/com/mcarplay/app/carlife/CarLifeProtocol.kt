@@ -194,7 +194,9 @@ object CarLifeProtocol {
      * CarWith requires CONTENT_ENCRYPTION=1 for media. Advertising it commits
      * both sides to the RSA/AES exchange before video initialization.
      */
-    fun featureResponsePayload(features: Map<String, Int> = linkedMapOf("CONTENT_ENCRYPTION" to 1)): ByteArray {
+    fun featureResponsePayload(
+        features: Map<String, Int> = linkedMapOf("CONTENT_ENCRYPTION" to 1, "DISABLE_RESOLUTION_OPTION" to 1),
+    ): ByteArray {
         require(features.size <= MAX_FEATURE_COUNT) { "Too many CarLife features" }
         val out = ByteArrayOutputStream()
         out.write(pbInt(1, features.size))
@@ -288,9 +290,10 @@ object CarLifeProtocol {
         }
     }
 
-    fun huInfoPayload(): ByteArray =
+    fun huInfoPayload(displaySize: Pair<Int, Int>? = null): ByteArray =
         pbString(1, "Android") +
             pbString(4, "mcarplay") +
+            (displaySize?.let { pbString(8, "${it.first}x${it.second}") } ?: ByteArray(0)) +
             pbString(14, "Xiaomi") +
             pbString(20, "CarWith")
 

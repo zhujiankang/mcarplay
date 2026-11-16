@@ -1421,6 +1421,7 @@ class MainActivity : AppCompatActivity() {
         updateConnectionSteps(latest)
         val s =
             when {
+                SessionController.screenOutputPaused -> HeroState.CONNECTED
                 SessionController.videoSender?.let { it.isRunning && it.framesSentTotal > 0 } == true -> HeroState.CONNECTED
                 SessionController.isSessionRunning() || SessionController.sessionStarting.get() ->
                     HeroState.CONNECTING
@@ -1653,7 +1654,12 @@ class MainActivity : AppCompatActivity() {
                 .toString()
                 .trim()
                 .ifEmpty { getString(R.string.main_hotspot_title) }
-        heroSubline.text = getString(R.string.ma_connected_subline, ssid, mm, ss)
+        heroSubline.text =
+            if (SessionController.screenOutputPaused) {
+                getString(R.string.ma_screen_returned_to_car)
+            } else {
+                getString(R.string.ma_connected_subline, ssid, mm, ss)
+            }
     }
 
     private fun updateAudioTag() {

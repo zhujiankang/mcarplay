@@ -15,6 +15,84 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class ScreenStreamLifecycleTest {
+    @Test
+    fun delayedRecordFromPreviousScreenCannotActivateReplacement() {
+        AirPlayRecordLifecycleTest.Peer().use { peer ->
+            val holdFirstRecord =
+                java.util.concurrent.atomic
+                    .AtomicBoolean(true)
+            peer.reply = { request ->
+                if (request.method == "SETUP") {
+                    request.respond(200, BinaryPlist.encode(mapOf("streams" to listOf(mapOf("dataPort" to 12345L)))))
+                } else if (!holdFirstRecord.getAndSet(false)) {
+                    request.respond(200)
+                }
+            }
+            val client =
+                AirPlayClient(
+                    Iap2SenderSession.CarPlayEndpoint("test", "", 0, 0, peer.port, null, null, null, listOf("127.0.0.1")),
+                    log = {},
+                )
+            val worker = Executors.newSingleThreadExecutor()
+            try {
+                assertTrue(client.reconnect())
+                assertNotNull(client.runScreenStream(null, "test"))
+                assertEquals("SETUP", peer.next()!!.method)
+                val pending = worker.submit(Callable { client.record() })
+                val oldRecord = peer.next()!!
+                assertEquals("RECORD", oldRecord.method)
+                assertNotNull(client.runScreenStream(null, "test"))
+                assertEquals("SETUP", peer.next()!!.method)
+                oldRecord.respond(200)
+                assertFalse(pending.get(3, TimeUnit.SECONDS))
+                assertFalse(client.sessionActive)
+                assertTrue(client.record())
+                assertTrue(client.sessionActive)
+            } finally {
+                client.close()
+                worker.shutdownNow()
+            }
+        }
+    }
+
+    @Test
+    fun mercedesReturnCycleRecordsTheNewScreenWithoutReactivatingAudioOrSession() {
+        val requests =
+            exchange(7) { client ->
+                val setup = client.runSetup()!!
+                AirPlayClient::class.java.getDeclaredField("negotiatedInfo").apply { isAccessible = true }.set(
+                    client,
+                    mapOf("manufacturer" to "Mercedes-Benz", "model" to "MB_D-M-5"),
+                )
+                client.configureStartup(com.mcarplay.app.compat.MercedesStartup.Mode.SINGLE_RECORD)
+                assertNotNull(client.runScreenStream(ByteArray(32), setup.displayUuid))
+                assertTrue(client.record())
+                assertTrue(client.record()) // 音频追加/重复调用不能重复激活当前屏幕。
+                val streams =
+                    ScreenResourceStreams(
+                        isCurrent = { true },
+                        phoneOwnsScreen = { client.modes.phoneOwnsScreen },
+                        retireScreen = { client.teardownScreenStream() },
+                        restoreScreen = {
+                            if (client.runScreenStream(ByteArray(32), setup.displayUuid) != null && client.record() && client.record()) {
+                                ScreenResourceStreams.RestoreResult.RESTORED
+                            } else {
+                                ScreenResourceStreams.RestoreResult.FAILED
+                            }
+                        },
+                        onFailure = { error(it) },
+                    )
+                client.modes.changeResponse(mapOf("resources" to listOf(mapOf("resourceID" to 1L, "transferType" to 1L))))
+                assertTrue(streams.reconcile())
+                assertTrue(client.modes.onUserRequestedUi().allowed)
+                assertTrue(streams.reconcile())
+            }
+        assertEquals(listOf("SETUP", "GET", "SETUP", "RECORD", "TEARDOWN", "SETUP", "RECORD"), requests.map { it.method })
+        assertEquals(1, requests.count { it.path == "/setup" })
+        assertEquals(1, requests.count { it.method == "TEARDOWN" })
+        assertTrue(requests.filter { it.method == "TEARDOWN" }.all { it.body["streams"] != null })
+    }
+
     private data class Request(
         val method: String,
         val path: String,

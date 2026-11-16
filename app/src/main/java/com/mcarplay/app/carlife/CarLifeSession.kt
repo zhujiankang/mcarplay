@@ -29,7 +29,7 @@ class CarLifeSession(
     private val log: (String) -> Unit,
     private val launchStrategy: CarLifeLaunchStrategy = CarLifeLaunchStrategy.COMPATIBLE,
     /** 向 CarWith 请求的编码尺寸；null 时沿用协议默认值。CarWith 可能不采纳。 */
-    private val requestedVideoSize: Pair<Int, Int>? = null,
+    requestedVideoSize: Pair<Int, Int>? = null,
     private val isAppInForeground: () -> Boolean = CarLifeLauncher::isAppInForeground,
     private val connectorFactory: (String, (Int) -> Socket) -> CarLifeChannelConnector =
         { _, connect ->
@@ -42,15 +42,18 @@ class CarLifeSession(
     private val notificationSnapshot: () -> CarWithNotificationSnapshot = CarWithNotificationProbe::snapshot,
     /** CarWith 发来「返回车机」时回调（命令读取线程）。 */
     private val onReturnToCar: () -> Unit = {},
+    private val waitForDisplaySize: Boolean = false,
 ) {
     private val appContext: Application = application
     internal val lease = CarLifeSessionLease()
     private val running = AtomicBoolean(false)
     private val sourceRun = UUID.randomUUID().toString().take(8)
+    private val videoRequest = CarLifeVideoRequest(requestedVideoSize, waitForDisplaySize)
     private val stateMachine =
         CarLifeStateMachine(
             CarLifeAuthVerifier.xiaomi(),
             CarLifeSeedExchange(),
+            huInfoPayload = { CarLifeProtocol.huInfoPayload(videoRequest.requestedSize) },
         )
     private val commandRouter = CarLifeCommandRouter(stateMachine)
     private val videoParser = CarLifeVideoParser()
@@ -132,6 +135,10 @@ class CarLifeSession(
 
     val receivedVideoBytes: Long get() = stats.snapshot().bytes
 
+    /** HU_INFO 与 VIDEO_INIT 共同声明的车机坐标域；不随实际 SPS 降档变化。 */
+    val touchWidth: Int get() = videoRequest.requestedSize.first
+    val touchHeight: Int get() = videoRequest.requestedSize.second
+
     val videoStats: String get() = stats.snapshot().summary()
 
     /** 固定状态和计数；可在阻塞 connectAll() 时由报告/remote 只读观察。 */
@@ -203,8 +210,8 @@ class CarLifeSession(
                 x = x,
                 y = y,
                 down = down,
-                width = videoWidth,
-                height = videoHeight,
+                width = touchWidth,
+                height = touchHeight,
             ) ?: return false
         return sendTouchAction(action, x, y)
     }
@@ -218,6 +225,19 @@ class CarLifeSession(
     }
 
     fun videoInfo(): String = "${videoWidth}x$videoHeight"
+
+    /** 车机 /info 到达后更新申请，不重开 CarWith，不重复发送已经发过的 INIT。 */
+    @Synchronized
+    fun updateRequestedVideoSize(size: Pair<Int, Int>) {
+        if (!videoRequest.update(size.first, size.second)) return
+        log("CARLIFE: 自动适配车机画布 ${videoRequest.requestedSize.first}x${videoRequest.requestedSize.second}")
+        if (running.get() && stateMachine.deviceInfo != null && stateMachine.state != CarLifeStateMachine.State.FAILED) {
+            sendAction(CarLifeStateMachine.Action(CarLifeProtocol.HU_INFO, CarLifeProtocol.huInfoPayload(videoRequest.requestedSize)))
+        }
+        requestVideoInitIfReady()
+    }
+
+    fun releaseTouch() = releaseActiveTouch()
 
     fun stop() {
         if (!running.compareAndSet(true, false)) return
@@ -388,6 +408,7 @@ class CarLifeSession(
         }
     }
 
+    @Synchronized
     private fun handleCommand(frame: CarLifeFrame) {
         val result = commandRouter.route(frame)
         result.log?.let { message -> log(message) }
@@ -395,10 +416,8 @@ class CarLifeSession(
         if (result.returnToCar) onReturnToCar()
         if (frame.kind == CarLifeProtocol.MD_PROTOCOL_MATCH && !result.failed) startHeartbeat()
         if (result.encryptionReady) {
-            log("CARLIFE: AES 已就绪，请求视频初始化")
-            val (width, height) = requestedVideoSize ?: (CarLifeProtocol.DEFAULT_WIDTH to CarLifeProtocol.DEFAULT_HEIGHT)
-            log("CARLIFE: 请求编码尺寸 ${width}x$height（以 VIDEO_INIT_DONE 返回为准）")
-            stateMachine.requestVideoInit(width, height).forEach(::sendAction)
+            log("CARLIFE: AES 已就绪，按车机画布准备视频初始化")
+            requestVideoInitIfReady()
             startHeartbeat()
         }
         if (frame.kind == CarLifeProtocol.VIDEO_ENCODER_INIT_DONE &&
@@ -406,12 +425,17 @@ class CarLifeSession(
         ) {
             // The router already decrypted and validated the negotiated format.
             val format = stateMachine.videoFormat ?: return
-            if (touchState.releasePoint() != null) {
-                sendTouchAction(CarLifeTouchAction.UP, videoWidth, videoHeight)
-            }
+            releaseActiveTouch()
             videoWidth = format.width
             videoHeight = format.height
         }
+    }
+
+    private fun requestVideoInitIfReady() {
+        if (!running.get()) return
+        val (width, height) = videoRequest.takeInitialSize(stateMachine.canInitializeVideo) ?: return
+        log("CARLIFE: 请求编码尺寸 ${width}x$height（以 VIDEO_INIT_DONE 和 SPS 返回为准）")
+        stateMachine.requestVideoInit(width, height).forEach(::sendAction)
     }
 
     private fun startChannelReader(channel: CarLifeChannel) {

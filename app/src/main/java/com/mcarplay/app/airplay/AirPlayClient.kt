@@ -269,6 +269,9 @@ class AirPlayClient(
 
     private var singleRecordMode: Boolean? = null
     private var recordAttempt: java.util.concurrent.CompletableFuture<Boolean>? = null
+
+    /** 屏幕重新 SETUP 后必须再次 RECORD；音频追加仍复用当前激活周期的结果。 */
+    private var screenActivationGeneration = 0L
     private var feedbackThread: Thread? = null
     private var keepAliveThread: Thread? = null
     private var closingConnections = 0
@@ -868,16 +871,22 @@ class AirPlayClient(
      * 回出畸形行 "OK 200 OK"；我们再回 → 无限回声，日志雪崩且空耗加密通道。
      * 通道写与 postEventCommand 共用一把锁，避免两线程加密帧交叉。
      */
-    private fun respondEventRequest(cseq: String?) {
-        val socket = eventCommandSocket ?: return
-        val cipher = eventCommandCipher
+    private fun respondEventRequest(
+        cseq: String?,
+        body: ByteArray = ByteArray(0),
+        expectedSocket: Socket,
+        expectedEpoch: Long,
+    ) {
         try {
             synchronized(eventCommandLock) {
+                if (!isConnectionCurrent(expectedEpoch) || eventCommandSocket !== expectedSocket) return
+                val cipher = eventCommandCipher
                 val head =
-                    "RTSP/1.0 200 OK\r\nContent-Length: 0\r\n" +
+                    "RTSP/1.0 200 OK\r\nContent-Length: ${body.size}\r\n" +
+                        (if (body.isNotEmpty()) "Content-Type: application/x-apple-binary-plist\r\n" else "") +
                         (cseq?.let { "CSeq: $it\r\n" } ?: "") + "\r\n"
-                val plaintext = head.toByteArray(Charsets.US_ASCII)
-                socket.getOutputStream().apply {
+                val plaintext = head.toByteArray(Charsets.US_ASCII) + body
+                expectedSocket.getOutputStream().apply {
                     write(cipher?.encrypt(plaintext) ?: plaintext)
                     flush()
                 }
@@ -897,16 +906,7 @@ class AirPlayClient(
             BinaryPlist.encode(
                 linkedMapOf(
                     "type" to "modesChanged",
-                    "params" to
-                        linkedMapOf(
-                            "appStates" to
-                                listOf(
-                                    linkedMapOf<String, Any?>("appStateID" to 2L, "entity" to 0L),
-                                    linkedMapOf<String, Any?>("appStateID" to 3L, "entity" to 0L),
-                                    linkedMapOf<String, Any?>("appStateID" to 1L, "entity" to 0L, "speechMode" to -1L),
-                                ),
-                            "resources" to modes.resourcesPayload(releaseScreen),
-                        ),
+                    "params" to modes.parameters(releaseScreen),
                 ),
             )
         return try {
@@ -2547,6 +2547,7 @@ class AirPlayClient(
         sessionKey: ByteArray?,
         displayUuid: String? = null,
     ): ScreenStreamInfo? {
+        val epoch = connectionEpoch
         // 对照 catplay（真车验证）：streamConnectionID = 随机 u64（+1 保证非零）
         val connectionId = java.security.SecureRandom().nextLong() and Long.MAX_VALUE or 1L
         val streamUuid =
@@ -2587,6 +2588,7 @@ class AirPlayClient(
                     "/",
                     body,
                     contentType = "application/x-apple-binary-plist",
+                    expectedEpoch = epoch,
                 )
             } catch (error: IOException) {
                 log("AIRPLAY: 流协商失败 - ${error.message}")
@@ -2632,8 +2634,15 @@ class AirPlayClient(
         )
         // MIB3：屏幕流 SETUP 200 拿到 dataPort 后，真机此时在控制通道发 detect（Frida
         // 时序：screen SETUP → phone detect on control → HU SYN on control）。见 armMib3VirtualLink。
+        synchronized(this) {
+            if (!isConnectionCurrent(epoch)) return null
+            screenStreamUuid = streamUuid
+            screenActivationGeneration++
+            recordAttempt?.complete(false)
+            recordAttempt = null
+            recordAccepted = false
+        }
         armMib3VirtualLink()
-        screenStreamUuid = streamUuid
         return ScreenStreamInfo(connectionId, dataPort, cipher)
     }
 
@@ -2675,16 +2684,18 @@ class AirPlayClient(
         }
 
     /**
-     * RECORD 激活会话。受影响的车机每个连接最多发一次：并发调用共享结果，超时也不能在原会话重发。
+     * RECORD 激活媒体。受影响的车机每个屏幕 SETUP 周期最多发一次：并发调用共享结果，超时不盲重试。
      * 其他接收端保留音频后补发 RECORD 的既有行为。等待网络响应时不持有客户端锁，close 可随时终止。
      */
     fun record(timeoutMillis: Int = 10_000): Boolean {
         val epoch: Long
+        val activation: Long
         val attempt: java.util.concurrent.CompletableFuture<Boolean>?
         val owner: Boolean
         synchronized(this) {
             if (sessionStopping || socket?.isClosed != false) return false
             epoch = connectionEpoch
+            activation = screenActivationGeneration
             val single = singleRecordMode ?: receiverCompatibility().singleRecordPerSession.also { singleRecordMode = it }
             val previous = recordAttempt
             if (single && previous != null) {
@@ -2713,7 +2724,10 @@ class AirPlayClient(
                     false
                 }
             log("AIRPLAY: 本会话已请求过 RECORD——${if (result) "跳过重复请求" else "结果未确认，不在原会话重发"}")
-            return result && synchronized(this) { connectionEpoch == epoch && !sessionStopping }
+            return result &&
+                synchronized(this) {
+                    connectionEpoch == epoch && screenActivationGeneration == activation && !sessionStopping
+                }
         }
         var accepted = false
         try {
@@ -2728,7 +2742,11 @@ class AirPlayClient(
                 )
             accepted =
                 synchronized(this) {
-                    if (statusLine.contains("200") && connectionEpoch == epoch && !sessionStopping) {
+                    if (statusLine.contains("200") &&
+                        connectionEpoch == epoch &&
+                        screenActivationGeneration == activation &&
+                        !sessionStopping
+                    ) {
                         recordAccepted = true
                         true
                     } else {
@@ -2844,11 +2862,12 @@ class AirPlayClient(
                             val tokens = firstLine.split(" ")
                             val isRequest = tokens.size >= 2 && tokens[1].startsWith("/")
                             if (!isRequest) continue
-                            // 车机请求：立即回 200（echo 请求 CSeq）；/command 走分发，其余节流留痕
+                            // changeModes 必须先做内存仲裁，再在原事件应答中返回资源结果。
+                            // 耗时的媒体流切换仍交给 onCommand 的串行工作线程。
                             val cseq = CSEQ_REGEX.find(message.head)?.groupValues?.get(1)
                             if (!isConnectionCurrent(eventEpoch) || eventCommandSocket !== socket) return@Thread
-                            respondEventRequest(cseq)
                             if (!firstLine.contains("/command")) {
+                                respondEventRequest(cseq, expectedSocket = socket, expectedEpoch = eventEpoch)
                                 unknownEventRequests++
                                 if (unknownEventRequests <= 10) {
                                     log("EVENT: 未知请求 [$firstLine] body=${message.body.size}B")
@@ -2871,6 +2890,7 @@ class AirPlayClient(
                                 }
                             val command = parsed as? Map<*, *>
                             if (command == null) {
+                                respondEventRequest(cseq, expectedSocket = socket, expectedEpoch = eventEpoch)
                                 // 车机每秒都会 POST 一条解不出来的 /command——按「体型指纹」
                                 // 去重，每种体型留一次全文（原因 + 报文头 + 完整 hex），其余只计数。
                                 badEventCommands++
@@ -2893,6 +2913,17 @@ class AirPlayClient(
                                 continue
                             }
                             val type = command["type"]?.toString() ?: "?"
+                            if (!isConnectionCurrent(eventEpoch) || eventCommandSocket !== socket) return@Thread
+                            val reply =
+                                if (type == "changeModes") {
+                                    val response = modes.changeResponse(command["params"] as? Map<*, *>)
+                                    log("EVENT: changeModes 原请求应答（${modes.describe()}）")
+                                    BinaryPlist.encode(response)
+                                } else {
+                                    ByteArray(0)
+                                }
+                            respondEventRequest(cseq, reply, socket, eventEpoch)
+                            if (!isConnectionCurrent(eventEpoch) || eventCommandSocket !== socket) return@Thread
                             if (eventCommandCounts.merge(type, 1, Int::plus) == 1) {
                                 log("EVENT: 首次收到车机命令 type=$type 形状=${PlistShape.describe(command.filterKeys { it != "type" })}")
                             }

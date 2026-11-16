@@ -78,3 +78,10 @@ The 0.1.8 work also compares DETECT stream parsing, first-probe response,
 connection ownership and bounded source preparation with the same pinned
 CarPToCarL version. mcarplay retains its own request-result/epoch checks and
 implements identity-scoped experiments rather than copying the entire stack.
+
+The 0.1.9 screen-resource work adapts the same pinned version's immediate
+`changeModes` resource response and screen-only retirement/restoration design.
+It also compares display negotiation and the CarLife display coordinate domain.
+`ScreenResourceStreams` is integrated with mcarplay's existing control worker,
+source registry, connection generations and media-activation guards; it does
+not include the reference application or change the upstream MIT attribution.

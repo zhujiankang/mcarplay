@@ -69,8 +69,8 @@ class CarLifeProtocolTest {
     @Test
     fun featureResponseAdvertisesContentEncryption() {
         val payload = CarLifeProtocol.featureResponsePayload()
-        assertEquals(1, CarLifeProtocol.firstIntField(payload, 1))
-        assertEquals(mapOf("CONTENT_ENCRYPTION" to 1), CarLifeProtocol.parseFeatures(payload))
+        assertEquals(2, CarLifeProtocol.firstIntField(payload, 1))
+        assertEquals(mapOf("CONTENT_ENCRYPTION" to 1, "DISABLE_RESOLUTION_OPTION" to 1), CarLifeProtocol.parseFeatures(payload))
     }
 
     @Test
