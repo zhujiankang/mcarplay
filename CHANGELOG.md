@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — mercedes-carlife (0.1.12)
+
+Validation: standard 980 + remote bridge 24 tests passed; Spotless, lint (0 errors), debug APK build and same-certificate verification passed. Vehicle validation is pending.
+
+English: Parse canonical Siri event `params.siriAction` and log each validated action. For the verified Mercedes-Benz/MB_D-M-5 identity, keep the original video connection, crypto and activation across native-screen/camera ownership changes; gate frames/touch and resume from a fresh IDR without transition-triggered screen teardown/setup/record. Preserve stale-session and resource-priority guards. Add binary-plist voice replay, repeated ownership-cycle, actual TCP-video and RTSP lifecycle regressions. Short-press reassignment and real vehicle recovery remain unverified; independent iAP2 ACK/network issues remain open.
+
+简体中文：修复标准 Siri 事件 siriAction 字段解析并逐次记录动作；已核对奔驰身份在原车/倒车接管与归还时保留原视频连接、加密与激活周期，按归属门控视频/触摸并从新IDR恢复，不因该切换拆流或再次SETUP/RECORD。保留旧会话隔离与资源优先级，增加plist语音回放、反复归属切换、真实TCP视频和RTSP回归。短按重新分配与实车恢复仍待验证，独立iAP2 ACK/网络问题仍未解决。
+
 ## Unreleased — mercedes-carlife (0.1.11)
 
 Validation: standard 972 + remote bridge 24 tests passed; Spotless, standard lint (0 errors), debug build and same-certificate APK verification passed. Vehicle voice acceptance is pending.

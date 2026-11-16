@@ -1,5 +1,7 @@
 package com.mcarplay.app.video
 
+import com.mcarplay.app.airplay.ModeArbiter
+import com.mcarplay.app.airplay.ScreenResourceStreams
 import com.mcarplay.app.airplay.StreamFrameCipher
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -15,6 +17,87 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 class VideoScreenOwnershipTest {
+    @Test
+    fun retainedScreenCyclesUseOneLiveTcpSenderAndWaitForNewIdr() {
+        ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { receiver ->
+            val modes = ModeArbiter()
+            val ended = CountDownLatch(1)
+            val sender =
+                VideoSender(
+                    "127.0.0.1",
+                    receiver.localPort,
+                    StreamFrameCipher.ChaCha(ByteArray(32)),
+                    640,
+                    480,
+                    log = {},
+                    onEnded = { ended.countDown() },
+                    phoneOwnsScreen = { modes.phoneOwnsScreen },
+                    externalVideoSource =
+                        object : ExternalVideoSource {
+                            override fun requestKeyFrame(): Boolean = true
+                        },
+                )
+            val resources =
+                ScreenResourceStreams(
+                    isCurrent = { sender.isRunning },
+                    phoneOwnsScreen = { modes.phoneOwnsScreen },
+                    retireScreen = { error("Camera overlay must retain the TCP video stream") },
+                    restoreScreen = { error("Camera return must not create a new video stream") },
+                    onFailure = { error(it) },
+                    retainScreenStream = { true },
+                    onRetainedScreenVisibility = { visible ->
+                        if (visible) {
+                            modes.onScreenStreamRestored()
+                            sender.reprimeOnNextKeyFrame()
+                        } else {
+                            sender.pauseScreenOutput()
+                        }
+                    },
+                )
+            try {
+                assertTrue(sender.start {})
+                receiver.accept().use {
+                    assertTrue(sender.submitExternalFrame(keyFrame(0)))
+                    awaitFrames(sender, 1)
+                    repeat(3) { cycle ->
+                        modes.changeResponse(mapOf("resources" to listOf(mapOf("resourceID" to 1L, "transferType" to 3L))))
+                        assertTrue(resources.reconcile(forceRebuild = true))
+                        assertTrue(resources.outputPaused)
+                        assertTrue(sender.submitExternalFrame(keyFrame((cycle * 3 + 1).toLong())))
+                        awaitSkipped(sender, (cycle * 2 + 1).toLong())
+                        assertEquals((cycle + 1).toLong(), sender.framesSentTotal)
+                        modes.changeResponse(mapOf("resources" to listOf(mapOf("resourceID" to 1L, "transferType" to 4L))))
+                        assertTrue(resources.reconcile())
+                        assertTrue(sender.submitExternalFrame(pFrame((cycle * 3 + 2).toLong())))
+                        awaitSkipped(sender, (cycle * 2 + 2).toLong())
+                        assertTrue(sender.submitExternalFrame(keyFrame((cycle * 3 + 3).toLong())))
+                        awaitFrames(sender, (cycle + 2).toLong())
+                        assertTrue(sender.isRunning)
+                        assertTrue(resources.attached)
+                        assertTrue(modes.phoneOwnsAudio)
+                    }
+                    assertEquals(1L, ended.count)
+                }
+            } finally {
+                resources.close()
+                sender.stop()
+                assertTrue(ended.await(2, TimeUnit.SECONDS))
+            }
+        }
+    }
+
+    @Test
+    fun briefOverlayWithoutSourceFramesStillRequiresAFreshIdr() {
+        val ownsScreen = AtomicBoolean(true)
+        val sender = admissionOnlySender(ownsScreen)
+        assertTrue(sender.admitScreenFrame(keyFrame = true, passthrough = true))
+        ownsScreen.set(false)
+        sender.pauseScreenOutput()
+        ownsScreen.set(true)
+        assertFalse(sender.admitScreenFrame(keyFrame = false, passthrough = true))
+        assertTrue(sender.admitScreenFrame(keyFrame = true, passthrough = true))
+    }
+
     @Test
     fun senderPausesWhileCarOwnsScreenAndRetriesTheIdrRequest() {
         ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { receiver ->

@@ -58,22 +58,23 @@ internal class ScreenOutputGate(
      */
     val isSuspended: Boolean get() = state == State.SUSPENDED
 
+    /** An ownership event can precede the next video frame; remember even a brief camera overlay. */
+    fun pause(): Boolean {
+        if (state == State.SUSPENDED) return false
+        state = State.SUSPENDED
+        skippedThisPause = 0L
+        lastKeyFrameRequestAtMs = null
+        keyFrameRequestAttempt = 0
+        return true
+    }
+
     fun admit(
         phoneOwnsScreen: Boolean,
         keyFrame: Boolean,
         nowMs: Long,
     ): Decision {
         if (!phoneOwnsScreen) {
-            val transition =
-                if (state == State.SUSPENDED) {
-                    null
-                } else {
-                    state = State.SUSPENDED
-                    skippedThisPause = 0L
-                    lastKeyFrameRequestAtMs = null
-                    keyFrameRequestAttempt = 0
-                    Transition.PAUSED
-                }
+            val transition = if (pause()) Transition.PAUSED else null
             skip()
             return Decision(false, transition, skippedThisPause, skippedTotal)
         }

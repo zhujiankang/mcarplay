@@ -1,6 +1,6 @@
 # mcarplay
 
-> `mercedes-carlife` 的 `0.1.11-debug` 增加实验性车机麦克风输入 → 认证 PCM → CarLife 加密 `0x58001` 回传，以及 Siri/HID 方向盘语音按键转发。仅使用车机声明的语音 PCM 输入，要求工作中的媒体为 type102；不启用持续唤醒词监听。GPS、车辆数据和仪表导航仍为能力/收取诊断，没有实现转发。详见[测试步骤与限制](docs/MERCEDES-CARLIFE-0.1.11.md)；语音功能待实车验收，独立网络故障仍未解决。
+> `mercedes-carlife` 的 `0.1.12-debug` 修复漏读 `params.siriAction` 的语音事件，对已核对 Mercedes-Benz/MB_D-M-5 身份在原车/倒车接管期间保留原视频连接；按主屏归属暂停图像，归还后从新 IDR 恢复，切换不触发再次 SETUP/RECORD。短按分配、实际麦克风识别和新包实车验收仍待确认，独立 iAP2/网络问题仍未解决。见[分析与测试说明](docs/MERCEDES-CARLIFE-0.1.12.md)。
 
 > `mercedes-carlife` 实验分支：同机 **CarWith → CarLife → 无线 CarPlay**。用户已确认 0.1.8 在奔驰 GLC260 2024 显示 CarWith，但存在尺寸、返回原车和稳定性问题；这是部分证据，尚非完整车型验收。代码对比与实车计划见 [分析报告](docs/CARPTOCARL-MERCEDES-CARLIFE-REVIEW.zh-CN.md)。
 

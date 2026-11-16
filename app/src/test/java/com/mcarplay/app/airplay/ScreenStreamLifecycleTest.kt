@@ -56,9 +56,9 @@ class ScreenStreamLifecycleTest {
     }
 
     @Test
-    fun mercedesReturnCycleRecordsTheNewScreenWithoutReactivatingAudioOrSession() {
+    fun mercedesReturnCycleKeepsTheOriginalScreenAndRecordActivation() {
         val requests =
-            exchange(7) { client ->
+            exchange(4) { client ->
                 val setup = client.runSetup()!!
                 AirPlayClient::class.java.getDeclaredField("negotiatedInfo").apply { isAccessible = true }.set(
                     client,
@@ -81,16 +81,26 @@ class ScreenStreamLifecycleTest {
                             }
                         },
                         onFailure = { error(it) },
+                        retainScreenStream = { client.isMercedesReceiver() },
+                        onRetainedScreenVisibility = { visible -> if (visible) client.modes.onScreenStreamRestored() },
                     )
+                repeat(5) {
+                    client.modes.changeResponse(mapOf("resources" to listOf(mapOf("resourceID" to 1L, "transferType" to 3L))))
+                    assertTrue(streams.reconcile())
+                    assertTrue(streams.attached)
+                    assertTrue(streams.outputPaused)
+                    client.modes.changeResponse(mapOf("resources" to listOf(mapOf("resourceID" to 1L, "transferType" to 4L))))
+                    assertTrue(streams.reconcile())
+                    assertFalse(streams.outputPaused)
+                }
                 client.modes.changeResponse(mapOf("resources" to listOf(mapOf("resourceID" to 1L, "transferType" to 1L))))
                 assertTrue(streams.reconcile())
                 assertTrue(client.modes.onUserRequestedUi().allowed)
                 assertTrue(streams.reconcile())
             }
-        assertEquals(listOf("SETUP", "GET", "SETUP", "RECORD", "TEARDOWN", "SETUP", "RECORD"), requests.map { it.method })
+        assertEquals(listOf("SETUP", "GET", "SETUP", "RECORD"), requests.map { it.method })
         assertEquals(1, requests.count { it.path == "/setup" })
-        assertEquals(1, requests.count { it.method == "TEARDOWN" })
-        assertTrue(requests.filter { it.method == "TEARDOWN" }.all { it.body["streams"] != null })
+        assertEquals(0, requests.count { it.method == "TEARDOWN" })
     }
 
     private data class Request(

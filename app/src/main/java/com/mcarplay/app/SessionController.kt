@@ -585,7 +585,7 @@ object SessionController {
     @Volatile
     private var screenResourceStreams: ScreenResourceStreams? = null
 
-    val screenOutputPaused: Boolean get() = screenResourceStreams?.attached == false
+    val screenOutputPaused: Boolean get() = screenResourceStreams?.outputPaused == true
 
     @Volatile
     private var disconnectCompletion: java.util.concurrent.CountDownLatch? = null
@@ -3871,12 +3871,12 @@ object SessionController {
                                 if (currentClient !== client || wasCancelled()) return@onEvent
                                 when (command["type"]) {
                                     "requestSiri" -> {
-                                        val action =
-                                            (command["params"] as? Map<*, *>)?.get("action") as? Number
-                                                ?: command["action"] as? Number
+                                        val action = VoiceKeyRouter.actionFrom(command)
                                         if (action != null) {
-                                            appendLog("VOICE: requestSiri action=${action.toInt()}")
-                                            voiceKeyRouter.siri(action.toInt(), client.isMercedesReceiver())
+                                            appendLog("VOICE: requestSiri siriAction=$action ${VoiceKeyRouter.actionName(action)}")
+                                            voiceKeyRouter.siri(action, client.isMercedesReceiver())
+                                        } else {
+                                            appendLog("VOICE: requestSiri missing or invalid action; no CarLife key sent")
                                         }
                                     }
                                     "hidSendReport" -> {
@@ -4245,6 +4245,21 @@ object SessionController {
                                             return ScreenResourceStreams(
                                                 isCurrent = ::isCurrent,
                                                 phoneOwnsScreen = { client.modes.phoneOwnsScreen },
+                                                retainScreenStream = { client.isMercedesReceiver() },
+                                                onRetainedScreenVisibility = retained@{ visible ->
+                                                    if (!isCurrent()) return@retained
+                                                    if (!visible) {
+                                                        source.releaseTouch()
+                                                        videoSender?.pauseScreenOutput()
+                                                        ConnectionDiagnostics.timeline.screenOutput(diagnosticAttempt, true)
+                                                        appendLog("SCREEN: 奔驰接管主屏——保留视频连接与激活，仅暂停图像；音频和控制继续")
+                                                    } else {
+                                                        client.modes.onScreenStreamRestored()
+                                                        videoSender?.reprimeOnNextKeyFrame()
+                                                        val requested = videoSender?.requestKeyFrame(fromReceiver = false) == true
+                                                        appendLog("SCREEN: 奔驰归还主屏——复用原视频连接，等待新的 IDR；已请求=$requested，无 SETUP/RECORD")
+                                                    }
+                                                },
                                                 retireScreen = retire@{
                                                     if (!isCurrent()) return@retire false
                                                     val previous =

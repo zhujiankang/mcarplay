@@ -54,5 +54,27 @@ internal class VoiceKeyRouter(
         const val START = 0x21
         const val STOP = 0x22
         const val HID_VOICE_COMMAND = 0xCF
+
+        /** AirPlay uses params.siriAction. Older senders also use action or a top-level field. */
+        fun actionFrom(command: Map<*, *>): Int? {
+            if (command["type"] != "requestSiri") return null
+            val params = command["params"] as? Map<*, *>
+            val raw = params?.get("siriAction") ?: params?.get("action") ?: command["siriAction"] ?: command["action"]
+            val value =
+                when (raw) {
+                    is Number -> raw.toInt().takeIf { it.toDouble() == raw.toDouble() }
+                    is String -> raw.trim().toIntOrNull()
+                    else -> null
+                }
+            return value?.takeIf { it in 1..3 }
+        }
+
+        fun actionName(action: Int): String =
+            when (action) {
+                1 -> "PREWARM"
+                2 -> "BUTTON_DOWN"
+                3 -> "BUTTON_UP"
+                else -> "INVALID"
+            }
     }
 }

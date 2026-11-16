@@ -6,6 +6,88 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ScreenResourceStreamsTest {
+    @Test fun retainedBorrowReturnsWithoutScreenTeardownSetupOrRecord() {
+        val modes = ModeArbiter()
+        val visibility = mutableListOf<Boolean>()
+        val streams =
+            ScreenResourceStreams(
+                isCurrent = { true },
+                phoneOwnsScreen = { modes.phoneOwnsScreen },
+                retireScreen = { error("Retained Mercedes screen must not send TEARDOWN") },
+                restoreScreen = { error("Retained Mercedes screen must not send SETUP/RECORD") },
+                onFailure = { error(it) },
+                retainScreenStream = { true },
+                onRetainedScreenVisibility = { visible ->
+                    visibility += visible
+                    if (visible) modes.onScreenStreamRestored()
+                },
+            )
+        repeat(10) {
+            modes.changeResponse(
+                mapOf("resources" to listOf(mapOf("resourceID" to 1L, "transferType" to 3L, "unborrowConstraint" to 1000L))),
+            )
+            assertFalse(modes.onUserRequestedUi().allowed)
+            assertTrue(streams.reconcile(forceRebuild = true))
+            assertTrue(streams.reconcile())
+            assertTrue(streams.attached)
+            assertTrue(streams.outputPaused)
+            assertTrue(modes.phoneOwnsAudio)
+            modes.changeResponse(mapOf("resources" to listOf(mapOf("resourceID" to 1L, "transferType" to 4L))))
+            assertTrue(streams.reconcile(forceRebuild = true))
+            assertTrue(streams.reconcile())
+            assertFalse(streams.outputPaused)
+            assertFalse(modes.onUserRequestedUi().rebuildStream)
+        }
+        assertEquals(List(10) { listOf(false, true) }.flatten(), visibility)
+    }
+
+    @Test fun retainedNativeHomeAndReturnAlsoPreserveTheScreenStream() {
+        val modes = ModeArbiter()
+        val visibility = mutableListOf<Boolean>()
+        val streams =
+            ScreenResourceStreams(
+                isCurrent = { true },
+                phoneOwnsScreen = { modes.phoneOwnsScreen },
+                retireScreen = { error("Unexpected teardown") },
+                restoreScreen = { error("Unexpected rebuild") },
+                onFailure = { error(it) },
+                retainScreenStream = { true },
+                onRetainedScreenVisibility = visibility::add,
+            )
+        modes.changeResponse(takeScreen())
+        assertTrue(streams.reconcile())
+        assertTrue(streams.outputPaused)
+        assertTrue(modes.onUserRequestedUi().allowed)
+        assertTrue(streams.reconcile(forceRebuild = true))
+        assertEquals(listOf(false, true), visibility)
+        assertFalse(streams.outputPaused)
+    }
+
+    @Test fun oldRetainedSessionCannotPauseOrResumeAfterConnectionReplacement() {
+        val modes = ModeArbiter()
+        var current = true
+        val events = mutableListOf<Boolean>()
+        val streams =
+            ScreenResourceStreams(
+                isCurrent = { current },
+                phoneOwnsScreen = { modes.phoneOwnsScreen },
+                retireScreen = { error("Unexpected teardown") },
+                restoreScreen = { error("Unexpected rebuild") },
+                onFailure = { error(it) },
+                retainScreenStream = { true },
+                onRetainedScreenVisibility = events::add,
+            )
+        modes.changeResponse(takeScreen())
+        assertTrue(streams.reconcile())
+        current = false
+        modes.onUserRequestedUi()
+        assertFalse(streams.reconcile())
+        current = true
+        streams.close()
+        assertFalse(streams.reconcile())
+        assertEquals(listOf(false), events)
+    }
+
     @Test
     fun carHomeThenRequestUiRetiresOnlyOnceAndRebuildsScreen() {
         val modes = ModeArbiter()

@@ -1,6 +1,6 @@
 # mcarplay
 
-> `0.1.11-debug` on `mercedes-carlife` adds experimental car-microphone input → authenticated PCM → encrypted CarLife `0x58001`, plus Siri/HID steering voice-key routing. Input is limited to explicitly advertised speech PCM with active media type102; continuous wake-word listening is disabled. GPS, vehicle data and cluster navigation remain capability/receipt diagnostics, not forwarding. See the [test guide and limits (Chinese)](docs/MERCEDES-CARLIFE-0.1.11.md). Vehicle voice acceptance and the separate network failures remain unresolved.
+> `0.1.12-debug` on `mercedes-carlife` fixes the ignored `params.siriAction` voice event and retains the original video connection across native-screen/camera takeovers for the verified Mercedes-Benz/MB_D-M-5 identity. Frames pause while the car owns the screen and resume from a fresh IDR without transition-triggered SETUP/RECORD. Short-press assignment, actual microphone recognition and vehicle acceptance remain unverified; independent iAP2/network issues remain open. See the [diagnosis and test guide (Chinese)](docs/MERCEDES-CARLIFE-0.1.12.md).
 
 > Experimental `mercedes-carlife` branch: same-phone **CarWith → CarLife → wireless CarPlay**. A user confirmed CarWith displayed on a 2024 Mercedes GLC260 with 0.1.8, with sizing, return-to-vehicle and stability issues. This is partial evidence, not full vehicle acceptance. See the [source comparison and vehicle test plan (Chinese)](docs/CARPTOCARL-MERCEDES-CARLIFE-REVIEW.zh-CN.md).
 

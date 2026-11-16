@@ -597,6 +597,14 @@ class VideoSender(
         runCatching { onScreenOutputSuspended(suspended) }
     }
 
+    /** Remember ownership transitions even if no source frame arrives during a short overlay. */
+    internal fun pauseScreenOutput() {
+        if (synchronized(screenOutputGate) { screenOutputGate.pause() }) {
+            reportScreenSuspended(true)
+            log("VIDEO: 主屏接管事件——保留视频连接，暂停图像并等待归还后的新 IDR")
+        }
+    }
+
     /** 暂停可能持续到车机拆掉解码器，恢复时重新声明参数集。 */
     private fun prepareScreenResume(passthrough: Boolean) {
         if (passthrough) {
