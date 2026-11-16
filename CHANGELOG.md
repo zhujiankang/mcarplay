@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — mercedes-carlife (0.1.11)
+
+Validation: standard 972 + remote bridge 24 tests passed; Spotless, standard lint (0 errors), debug build and same-certificate APK verification passed. Vehicle voice acceptance is pending.
+
+English: Add experimental advertised speech-input PCM reception, authenticated RTP decoding, 16kHz mono conversion and encrypted CarLife microphone uplink (`0x58001`). Route Siri/HID voice button edges to CarWith voice keys. Bound input queues/time, isolate late connection results and preserve Mercedes RECORD deduplication and media output. Add private vehicle capability/receipt diagnostics; GPS/vehicle/cluster navigation forwarding is not implemented. Vehicle voice validation is pending; this does not resolve the separate EPERM/iAP2 ACK failures.
+
+简体中文：新增车机声明的语音 PCM 输入、认证 RTP 解密、16kHz 单声道转换与 CarLife 加密麦克风回传（`0x58001`）。接入 Siri/HID 语音按键，限制录音队列/时长，隔离旧连接结果，保留奔驰 RECORD 去重和媒体播放。增加不含原始定位数据的车辆能力/收取诊断；尚未转发 GPS/车辆数据/仪表导航。语音实车验证待完成，独立 EPERM/iAP2 ACK 异常仍未解决。
+
 ## Unreleased — mercedes-carlife (0.1.10)
 
 Validation: standard 958 + remote bridge 24 tests passed; lint/debug build and same-certificate APK verification passed. Vehicle acceptance is pending.

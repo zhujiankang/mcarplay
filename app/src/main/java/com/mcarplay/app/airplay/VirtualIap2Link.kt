@@ -551,6 +551,7 @@ class VirtualIap2Link(
                 // 不必再在这条通路上耗（改查蓝牙/AVRCP 侧）。
                 params[6]?.value?.let { raw ->
                     val sends = u16List(raw)
+                    vehicleDataStatus.sends = sends.toSet()
                     log(
                         "IAPLINK: 车机发送清单(${sends.size})=" +
                             sends.joinToString(" ") { "0x%04x".format(it) } +
@@ -560,6 +561,7 @@ class VirtualIap2Link(
                 }
                 params[7]?.value?.let { raw ->
                     val receives = u16List(raw)
+                    vehicleDataStatus.receives = receives.toSet()
                     log(
                         "IAPLINK: 车机可收清单(${receives.size})=" +
                             receives.joinToString(" ") { "0x%04x".format(it) },
@@ -569,6 +571,7 @@ class VirtualIap2Link(
                     // 记忆键 = 车机身份 + " tunnel"：与蓝牙链路的记忆互不污染
                     mfiIdentity = mfiIdentityOf(params) + " tunnel"
                 }
+                log(vehicleDataStatus.summary())
                 sendCsmLocked(ids.IDENTIFICATION_ACCEPTED)
                 sendCsmLocked(ids.MFI_REQUEST_CERTIFICATE)
                 mib3AuthStage = 1
@@ -621,6 +624,10 @@ class VirtualIap2Link(
                 } else {
                     log("IAPLINK: 隧道 MFi 完成——等待对端订阅（随后其标记隧道就绪）")
                 }
+            }
+
+            0xFFFB, 0x5200, 0x5203 -> {
+                vehicleDataStatus.received(frame.messageId)?.let(log)
             }
 
             START_COMMUNICATIONS_UPDATES -> {
@@ -724,7 +731,11 @@ class VirtualIap2Link(
                     log(
                         "IAPLINK: 未处理的 CSM 0x${frame.messageId.toString(16)} " +
                             "(${Iap2MessageIds.nameOf(frame.messageId)}) ${frame.body.size}B hex=" +
-                            frame.body.joinToString(" ") { "%02x".format(it) },
+                            if (VehicleDataStatus.privatePayload(frame.messageId)) {
+                                "[private-vehicle-payload]"
+                            } else {
+                                frame.body.joinToString(" ") { "%02x".format(it) }
+                            },
                     )
                 }
             }
@@ -736,7 +747,13 @@ class VirtualIap2Link(
      * 边沿/长按连发语义见 [MediaKeyEdge]：按住期间的重复报告不会连跳几十首。
      */
     private fun fireHidKeysLocked(usages: List<Int>) {
+        val pressed = com.mcarplay.app.carlife.VoiceKeyRouter.HID_VOICE_COMMAND in usages
+        if (pressed != voicePressed) {
+            voicePressed = pressed
+            onVoiceKey?.invoke(pressed)
+        }
         for (usage in hidKeyEdge.onReport(usages, nowMillis())) {
+            if (usage == com.mcarplay.app.carlife.VoiceKeyRouter.HID_VOICE_COMMAND) continue
             val keyCode = ConsumerKeys.keyCodeFor(usage)
             log(
                 "IAPLINK: 车机媒体键 ${ConsumerKeys.nameOf(usage)}(0x%02x) → keyCode=".format(usage) +
@@ -818,7 +835,12 @@ class VirtualIap2Link(
         frameCount++
         val frames = parser.offer(bytes)
         for (frame in frames) {
-            val hex = frame.body.joinToString(" ") { "%02x".format(it) }
+            val hex =
+                if (VehicleDataStatus.privatePayload(frame.messageId)) {
+                    "[private-vehicle-payload]"
+                } else {
+                    frame.body.joinToString(" ") { "%02x".format(it) }
+                }
             if (frameCount <= 30 || frameCount % 100 == 0) {
                 log(
                     "IAPLINK: rx 0x${frame.messageId.toString(16)} " +
@@ -842,6 +864,9 @@ class VirtualIap2Link(
      * 只有 iAP2 链路真正建立后才会来（见 [eventLinkArmed]）。
      */
     var onMediaKey: ((Int) -> Unit)? = null
+    var onVoiceKey: ((Boolean) -> Unit)? = null
+    private var voicePressed = false
+    private val vehicleDataStatus = VehicleDataStatus()
 
     /** 导航键（iDrive 旋钮/四向）：交给会话层注入虚拟屏（DPAD_*），不是全局媒体键。 */
     var onNavKey: ((Int) -> Unit)? = null

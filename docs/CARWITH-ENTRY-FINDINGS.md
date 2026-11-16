@@ -1725,3 +1725,9 @@ APK 指纹、完整矩阵、截图/日志的证据边界及同车换手机步骤
 0.1.7-debug 的实际 APK 指纹与交付包一致。用户反馈奔驰显示 CarPlay 图标、CarWith 短暂出现。日志确认真实 iAP2 回连、蓝牙识别/认证、热点/ctrl、AirPlay 配对及 RECORD 成功；本机七路连接、RSA/AES/准入及 1280×720@30 初始化通过。两轮视频/事件通道先出现 EOF/reset，随后才收到源端首帧，写入 Broken pipe 后由 mcarplay 关闭七口；不能归因于 CarWith 崩溃或证明持续 CarWith 桌面输出。
 
 手机型号字符串 `24129PN74C`，Android 16/API 36，CarWith `4.0.9-20260629 (104000009)`；本轮 CarLife 已变为 `8.8.5 (274)`。奔驰 `/info` 自报 `Mercedes-Benz / MB_D-M-5`、firmwareRevision `5.0.0`、sourceVersion `320.17.8`、1624×1150@60。这些字段不直接等同于整车 MBUX 用户界面版本。新增 0.1.8 是代码修复候选，没有本轮实车成功结果，见 [测试说明](MERCEDES-CARLIFE-0.1.8.md)。
+
+## 2026-11-16：麦克风/方向盘语音候选与车辆数据能力核对
+
+用户明确第 2 项指“方向盘语音按键唤起 CarWith/小爱”。最近用户语音故障由 CarWith 画面内按钮触发，不能证明方向盘事件故障。0.1.9 实测有画面、音乐和触摸，随后语音报麦克风问题并出现长停顿/EPERM；新候选尚无实车结果。0.1.11 对车机 PCM 输入、认证解密、16kHz 单声道与 CarLife 0x58001 加密回传完成软件接入；人工生成 RTSP/UDP/TCP 回环不作为奔驰麦克风或小爱识别成功证据。
+
+手机型号字符串 24129PN74C，Android16/API36，用户提供 HyperOS OS3.0.307.0.WOCCNXM，CarWith4.0.9-20260629(104000009)、CarLife8.8.5(274)；车机 Mercedes-Benz/MB_D-M-5，1624×1150@60，2024 GLC260。旧日志 /info speechRecognition type100 输入位图 0x8000040；网络 iAP2 身份发送列表含 0xFFFB、0x5200、0x5203，可收列表含 0x5201、0x5202。这分别是定位/导航元数据能力声明，不等于坐标已收到、CarWith 采纳车体 GPS或仪表显示成功，更不证明全屏仪表地图。新增收取/订阅计数；GPS、车辆数据与仪表导航仍未实现转发。详见 [测试与限制](MERCEDES-CARLIFE-0.1.11.md)。

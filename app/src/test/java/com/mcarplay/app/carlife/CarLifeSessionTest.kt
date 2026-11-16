@@ -16,6 +16,45 @@ import java.util.concurrent.atomic.AtomicReference
 
 class CarLifeSessionTest {
     @Test
+    fun microphoneCommandsAreAcceptedDuringVideoRunningButNotBeforeAuthentication() {
+        val requests = mutableListOf<Int>()
+        val session = CarLifeSession(Application(), onAccessUnit = {}, onEnded = {}, log = {}, onMicrophoneRequest = requests::add)
+        val machine = field("stateMachine").get(session) as CarLifeStateMachine
+        val cipher = CarLifePayloadCipher(ByteArray(16))
+        val handle = CarLifeSession::class.java.getDeclaredMethod("handleCommand", CarLifeFrame::class.java).apply { isAccessible = true }
+
+        fun command(
+            kind: Int,
+            encrypted: Boolean = false,
+        ) {
+            handle.invoke(
+                session,
+                CarLifeFrame(
+                    CarLifeProtocol.PORT_COMMAND,
+                    kind,
+                    0,
+                    0,
+                    if (encrypted) cipher.encrypt(ByteArray(0)) else ByteArray(0),
+                ),
+            )
+        }
+        command(0x10024)
+        assertTrue(requests.isEmpty())
+        CarLifeStateMachine::class.java
+            .getDeclaredField("state")
+            .apply {
+                isAccessible = true
+            }.set(machine, CarLifeStateMachine.State.VIDEO_RUNNING)
+        CarLifeStateMachine::class.java
+            .getDeclaredField("payloadCipher")
+            .apply { isAccessible = true }
+            .set(machine, cipher)
+        command(0x10024, true)
+        command(0x10023, true)
+        assertEquals(listOf(2, 0), requests)
+    }
+
+    @Test
     fun stopPreservesLastListenerFailureForReportAfterConnectorIsReleased() {
         var now = 0L
         val connector =

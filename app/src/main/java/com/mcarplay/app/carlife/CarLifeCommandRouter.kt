@@ -16,6 +16,8 @@ class CarLifeCommandRouter(
         val encryptionReady: Boolean = false,
         /** 用户点了「返回车机」：应把主屏与主音频交还车机。 */
         val returnToCar: Boolean = false,
+        /** 0=end, 1=wake-word monitoring, 2=explicit recognition. */
+        val microphone: Int? = null,
     )
 
     /** 只在命令读取线程上访问。 */
@@ -52,6 +54,13 @@ class CarLifeCommandRouter(
 
             CarLifeProtocol.MD_RETURN_TO_CAR ->
                 Result(log = "CARLIFE: 收到返回车机命令 kind=0x10021，交还主屏与主音频", returnToCar = true)
+
+            0x10022 -> Result(microphone = 1, log = "MIC: CarLife requested wake-word input; continuous listening disabled")
+            0x10023 -> Result(microphone = 0, log = "MIC: CarLife requested recording end")
+            0x10024 -> Result(microphone = 2, log = "MIC: CarLife requested recognition input")
+            0x10030 -> Result(log = "VEHICLE: CarLife next-turn message received; clusterNavigationForwarding=false")
+            0x10031, 0x10033, 0x10034 ->
+                Result(log = "VEHICLE: CarLife vehicle-data request kind=0x${frame.kind.toString(16)}; forwarding=false")
 
             CarLifeProtocol.MD_INFO -> {
                 val actions = stateMachine.onInfo(frame.payload)

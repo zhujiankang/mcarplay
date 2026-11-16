@@ -38,6 +38,12 @@ internal class ModeArbiter {
     private val resources = linkedMapOf(SCREEN to Resource(), MAIN_AUDIO to Resource())
     private var screenRelinquished = false
     private var audioClaimPending = false
+    private var speechRecognition = false
+
+    @Synchronized
+    fun setSpeechRecognition(active: Boolean) {
+        speechRecognition = active
+    }
 
     /** 屏幕当前是否归手机（诊断与是否值得补关键帧）。 */
     @get:Synchronized
@@ -176,7 +182,11 @@ internal class ModeArbiter {
                 listOf(
                     linkedMapOf<String, Any?>("appStateID" to 2L, "entity" to 0L),
                     linkedMapOf<String, Any?>("appStateID" to 3L, "entity" to 0L),
-                    linkedMapOf<String, Any?>("appStateID" to 1L, "entity" to 0L, "speechMode" to -1L),
+                    linkedMapOf<String, Any?>(
+                        "appStateID" to 1L,
+                        "entity" to (if (speechRecognition) 1L else 0L),
+                        "speechMode" to (if (speechRecognition) 2L else -1L),
+                    ),
                 ),
             "resources" to resourcesPayload(releaseScreen),
         )

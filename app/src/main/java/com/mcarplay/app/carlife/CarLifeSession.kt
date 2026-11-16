@@ -43,6 +43,7 @@ class CarLifeSession(
     /** CarWith 发来「返回车机」时回调（命令读取线程）。 */
     private val onReturnToCar: () -> Unit = {},
     private val waitForDisplaySize: Boolean = false,
+    private val onMicrophoneRequest: (Int) -> Unit = {},
 ) {
     private val appContext: Application = application
     internal val lease = CarLifeSessionLease()
@@ -65,6 +66,19 @@ class CarLifeSession(
     private val seenAudioKinds = java.util.Collections.synchronizedSet(mutableSetOf<Pair<CarLifeChannel, Int>>())
     private val unparsedAudio = java.util.concurrent.ConcurrentHashMap<CarLifeChannel, Long>()
     private val touchState = CarLifeTouchState()
+    private val microphoneWriter =
+        CarLifeMicrophoneWriter(
+            socket = { connector?.socket(CarLifeChannel.VOICE) },
+            cipher = { stateMachine.payloadCipher },
+            log = log,
+        )
+
+    internal fun beginMicrophone() = microphoneWriter.begin()
+
+    internal fun endMicrophone() = microphoneWriter.end()
+
+    internal fun offerMicrophone(pcm: ByteArray): Boolean =
+        running.get() && stateMachine.state == CarLifeStateMachine.State.VIDEO_RUNNING && microphoneWriter.offer(pcm)
 
     @Volatile
     private var endReported = false
@@ -248,6 +262,7 @@ class CarLifeSession(
             lastChannelSummary = it.diagnosticSummary()
         }
         connector = null
+        microphoneWriter.close()
         sourceThread?.interrupt()
         sourceThread = null
         heartbeatThread?.interrupt()
@@ -414,6 +429,9 @@ class CarLifeSession(
         result.log?.let { message -> log(message) }
         result.actions.forEach(::sendAction)
         if (result.returnToCar) onReturnToCar()
+        result.microphone?.let { request ->
+            if (stateMachine.state == CarLifeStateMachine.State.VIDEO_RUNNING) onMicrophoneRequest(request)
+        }
         if (frame.kind == CarLifeProtocol.MD_PROTOCOL_MATCH && !result.failed) startHeartbeat()
         if (result.encryptionReady) {
             log("CARLIFE: AES 已就绪，按车机画布准备视频初始化")

@@ -14,6 +14,7 @@ import com.mcarplay.app.audio.AudioProfileMemory
 import com.mcarplay.app.audio.AudioSender
 import com.mcarplay.app.audio.AudioTuning
 import com.mcarplay.app.audio.CarLifeAudioBridge
+import com.mcarplay.app.audio.CarLifeMicrophoneBridge
 import com.mcarplay.app.audio.ConnectionAudioPrefs
 import com.mcarplay.app.bt.AutoConnectPrefs
 import com.mcarplay.app.bt.BluetoothBringupGrace
@@ -35,6 +36,7 @@ import com.mcarplay.app.carlife.CarLifeProtocol
 import com.mcarplay.app.carlife.CarLifeSession
 import com.mcarplay.app.carlife.CarLifeSessionRegistry
 import com.mcarplay.app.carlife.CarLifeVideoAccessUnit
+import com.mcarplay.app.carlife.VoiceKeyRouter
 import com.mcarplay.app.carlife.mapCarLifeTouch
 import com.mcarplay.app.compat.CompatibilityPrefs
 import com.mcarplay.app.compat.MercedesStartup
@@ -102,6 +104,16 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 销毁/重建对其无影响。会话逻辑线程通过 [appContext] 运行，不依赖任何 Activity。
  */
 object SessionController {
+    private val microphoneBridge = CarLifeMicrophoneBridge(log = { appendLog(it) })
+    private val voiceKeyRouter =
+        VoiceKeyRouter({ SystemClock.uptimeMillis() }) { key ->
+            val source = currentCarLifeSession
+            controlActions.execute {
+                if (source != null && currentCarLifeSession === source) {
+                    appendLog("VOICE: steering key=0x${key.toString(16)} carlifeSent=${source.sendHardKey(key)}")
+                }
+            }
+        }
     // ---- 日志缓冲（进程级；Activity 订阅渲染）----
 
     private val logLock = Any()
@@ -1025,6 +1037,7 @@ object SessionController {
                     }
                 },
                 onEnded = { reason ->
+                    microphoneBridge.stop(session)
                     // 旧源的迟到回调不能停掉新一轮的发送端
                     val output = carLifeOutput.takeIf { currentCarLifeSession === session }
                     if (output != null) {
@@ -1064,6 +1077,15 @@ object SessionController {
                 log = { line -> appendLog(line) },
                 requestedVideoSize = requestedVideoSize,
                 waitForDisplaySize = requestedVideoSize == null,
+                onMicrophoneRequest = onMicrophoneRequest@{ request ->
+                    if (currentCarLifeSession !== session) return@onMicrophoneRequest
+                    if (request == 0) microphoneBridge.stop(session)
+                    if (request == 2) {
+                        val client = currentClient ?: return@onMicrophoneRequest
+                        val secret = currentSharedSecret ?: return@onMicrophoneRequest
+                        microphoneBridge.request(client, session, secret, activeAudioProfile?.streamType)
+                    }
+                },
                 launchStrategy = CarLifeLaunchStrategy.COMPATIBLE,
                 onReturnToCar = onReturnToCar@{
                     if (currentCarLifeSession !== session) return@onReturnToCar
@@ -1479,6 +1501,8 @@ object SessionController {
         closeClient: Boolean = true,
         preserveScreenSocket: Boolean = false,
     ) {
+        voiceKeyRouter.reset()
+        microphoneBridge.stop()
         currentClient?.beginOrderlyStop()
         screenResourceStreams?.close()
         screenResourceStreams = null
@@ -3655,6 +3679,9 @@ object SessionController {
                             created.onMediaKey = { keyCode ->
                                 if (ownsConnection() && currentClient === created) routeCarMediaKey(keyCode, "iAP2 0x6802")
                             }
+                            created.onVoiceKey = { pressed ->
+                                if (ownsConnection() && currentClient === created) voiceKeyRouter.hid(pressed)
+                            }
                             // 旋钮/四向拨杆（iAP2 0x6802 通路）：注入虚拟屏的 DPAD
                             created.onNavKey = { keyCode ->
                                 if (ownsConnection() && currentClient === created) injectNavigationKey(keyCode)
@@ -3839,9 +3866,19 @@ object SessionController {
                                 client.activeHost ?: EndpointHosts.candidates(client.currentEndpoint.ipAddresses).firstOrNull()
                             // 每台媒体键 HID 设备一个边沿判定器；随本条 event 通道重建，旧轮按住状态不残留
                             val mediaKeyEdges = HashMap<String, MediaKeyEdge>()
+                            val voiceHidDevices = HashSet<String>()
                             client.connectEventChannel(sessionKey, setup) onEvent@{ command ->
                                 if (currentClient !== client || wasCancelled()) return@onEvent
                                 when (command["type"]) {
+                                    "requestSiri" -> {
+                                        val action =
+                                            (command["params"] as? Map<*, *>)?.get("action") as? Number
+                                                ?: command["action"] as? Number
+                                        if (action != null) {
+                                            appendLog("VOICE: requestSiri action=${action.toInt()}")
+                                            voiceKeyRouter.siri(action.toInt(), client.isMercedesReceiver())
+                                        }
+                                    }
                                     "hidSendReport" -> {
                                         val uuid = command["uuid"]?.toString()
                                         val report = command["hidReport"] as? ByteArray
@@ -3901,11 +3938,21 @@ object SessionController {
                                                     "（uuid=$uuid）",
                                             )
                                         } else if (consumerUsages != null) {
+                                            val previouslyPressed = voiceHidDevices.isNotEmpty()
+                                            if (VoiceKeyRouter.HID_VOICE_COMMAND in consumerUsages) {
+                                                voiceHidDevices.add(uuid.orEmpty())
+                                            } else {
+                                                voiceHidDevices.remove(uuid.orEmpty())
+                                            }
+                                            if (previouslyPressed != voiceHidDevices.isNotEmpty()) {
+                                                voiceKeyRouter.hid(voiceHidDevices.isNotEmpty())
+                                            }
                                             // Consumer 设备的「无按键」/释放报文（值为 0 或下标越界）：
                                             // 静默计数，避免释放事件刷屏
                                             if (consumerUsages.isEmpty()) consumerReleaseCount++
                                             val edge = mediaKeyEdges.getOrPut(uuid.orEmpty()) { MediaKeyEdge() }
                                             for (usage in edge.onReport(consumerUsages, android.os.SystemClock.uptimeMillis())) {
+                                                if (usage == VoiceKeyRouter.HID_VOICE_COMMAND) continue
                                                 val label = "${ConsumerKeys.nameOf(usage)} uuid=$uuid usage=0x%02x".format(usage)
                                                 val keyCode = ConsumerKeys.keyCodeFor(usage)
                                                 if (keyCode != 0) {

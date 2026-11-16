@@ -85,3 +85,13 @@ It also compares display negotiation and the CarLife display coordinate domain.
 `ScreenResourceStreams` is integrated with mcarplay's existing control worker,
 source registry, connection generations and media-activation guards; it does
 not include the reference application or change the upstream MIT attribution.
+
+The 0.1.11 microphone/voice-key work compares the same pinned CarPToCarL
+version's input-audio candidates, MicUplink and VoiceKeyRouter. Its MIT notice
+remains retained. The implementation adds mcarplay-specific authenticated-only
+packet handling, bounded CarLife injection and connection-scoped lifecycles; it
+does not copy microphone WAV dumping or bundle third-party SDKs/APKs. Protocol
+message IDs, recording direction and PCM format were cross-checked against
+Baidu's publicly published CarLife vehicle SDK in milesking/apollo-DuerOS,
+commit `6a07419818f46aadda34c5f55e63d4a1fc8136ef` (Apache-2.0). Only protocol
+facts are used; that SDK implementation is not distributed here.

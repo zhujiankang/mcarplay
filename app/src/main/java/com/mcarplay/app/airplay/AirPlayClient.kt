@@ -1768,6 +1768,7 @@ class AirPlayClient(
      * `dispatchMediaKey`（与 HID 直投那条路合并处理）。
      */
     var onMediaKey: ((Int) -> Unit)? = null
+    var onVoiceKey: ((Boolean) -> Unit)? = null
 
     /** 导航键（iDrive 旋钮/四向拨杆）：需要虚拟屏焦点，由会话层注入 DPAD。 */
     var onNavKey: ((Int) -> Unit)? = null
@@ -1828,6 +1829,9 @@ class AirPlayClient(
                         created.pinnedMfiLength = receiverCompatibility().pinnedMfiChallengeLength
                         created.onMediaKey = { keyCode ->
                             if (iapLink === created && isSessionAlive(epoch)) onMediaKey?.invoke(keyCode)
+                        }
+                        created.onVoiceKey = { pressed ->
+                            if (iapLink === created && isSessionAlive(epoch)) onVoiceKey?.invoke(pressed)
                         }
                         created.onNavKey = { keyCode ->
                             if (iapLink === created && isSessionAlive(epoch)) onNavKey?.invoke(keyCode)
@@ -2318,6 +2322,100 @@ class AirPlayClient(
         )
     }
 
+    internal fun microphoneProfile(): com.mcarplay.app.audio.MicrophoneProfile? =
+        com.mcarplay.app.audio.MicrophoneProfile
+            .select(negotiatedInfo)
+
+    @Synchronized
+    internal fun setSpeechRecognitionState(
+        active: Boolean,
+        epoch: Long,
+    ): Boolean {
+        if (!isConnectionCurrent(epoch)) return false
+        modes.setSpeechRecognition(active)
+        return true
+    }
+
+    /** Dedicated input stream: keep media type102 untouched and use only advertised speech-input PCM.
+     * A local UDP port must exist before SETUP. No probing unsupported media input formats.
+     */
+    internal fun setupMicrophone(
+        profile: com.mcarplay.app.audio.MicrophoneProfile,
+        connectionId: Long,
+        localPort: Int,
+        epoch: Long,
+    ): Boolean {
+        if (!isConnectionCurrent(epoch) || microphoneProfile() != profile) return false
+        val stream = microphoneDescription(profile, connectionId, localPort)
+        val (status, _) =
+            request(
+                "SETUP",
+                "/",
+                BinaryPlist.encode(mapOf("streams" to listOf(stream))),
+                timeoutMillis = 5_000,
+                contentType = "application/x-apple-binary-plist",
+                expectedEpoch = epoch,
+            )
+        val accepted = status.contains("200") && isConnectionCurrent(epoch)
+        log("MIC: setupAccepted=$accepted type=100 audioType=speechRecognition format=0x${profile.format.toString(16)}")
+        return accepted
+    }
+
+    internal fun teardownMicrophone(
+        connectionId: Long,
+        epoch: Long,
+    ): Boolean {
+        if (!isConnectionCurrent(epoch)) return false
+        val stream = mapOf("type" to 100L, "streamConnectionID" to connectionId)
+        val (status, _) =
+            request(
+                "TEARDOWN",
+                "/",
+                BinaryPlist.encode(mapOf("streams" to listOf(stream))),
+                timeoutMillis = 1_500,
+                contentType = "application/x-apple-binary-plist",
+                expectedEpoch = epoch,
+            )
+        return status.contains("200")
+    }
+
+    internal fun isMercedesReceiver(): Boolean =
+        MercedesStartup
+            .resolve(
+                MercedesStartup.Mode.SINGLE_RECORD,
+                negotiatedInfo?.get("manufacturer") as? String,
+                negotiatedInfo?.get("model") as? String,
+            ).singleRecord
+
+    internal fun microphoneKey(
+        secret: ByteArray,
+        connectionId: Long,
+    ): ByteArray =
+        AirPlayCrypto.hkdfSha512(
+            secret,
+            "DataStream-Salt$connectionId".toByteArray(Charsets.US_ASCII),
+            "DataStream-Input-Encryption-Key".toByteArray(Charsets.US_ASCII),
+        )
+
+    internal fun microphoneDescription(
+        profile: com.mcarplay.app.audio.MicrophoneProfile,
+        connectionId: Long,
+        localPort: Int,
+    ): Map<String, Any?> {
+        require(connectionId > 0 && localPort in 1..65535)
+        return linkedMapOf(
+            "type" to 100L,
+            "streamConnectionID" to connectionId,
+            "audioType" to "speechRecognition",
+            "audioFormat" to profile.format,
+            "audioLatencyMs" to 60L,
+            "input" to true,
+            "dataPort" to localPort.toLong(),
+            "supportsRTPPacketRedundancy" to false,
+            "supportsHighAccuracyTimestamps" to false,
+        )
+    }
+
     /**
      * 查询并纠正接收端音量（AirPlay 的 `GET_PARAMETER`/`SET_PARAMETER` + `volume`）。
      *
@@ -2687,13 +2785,17 @@ class AirPlayClient(
      * RECORD 激活媒体。受影响的车机每个屏幕 SETUP 周期最多发一次：并发调用共享结果，超时不盲重试。
      * 其他接收端保留音频后补发 RECORD 的既有行为。等待网络响应时不持有客户端锁，close 可随时终止。
      */
-    fun record(timeoutMillis: Int = 10_000): Boolean {
+    fun record(
+        timeoutMillis: Int = 10_000,
+        expectedEpoch: Long? = null,
+    ): Boolean {
         val epoch: Long
         val activation: Long
         val attempt: java.util.concurrent.CompletableFuture<Boolean>?
         val owner: Boolean
         synchronized(this) {
             if (sessionStopping || socket?.isClosed != false) return false
+            if (expectedEpoch != null && expectedEpoch != connectionEpoch) return false
             epoch = connectionEpoch
             activation = screenActivationGeneration
             val single = singleRecordMode ?: receiverCompatibility().singleRecordPerSession.also { singleRecordMode = it }

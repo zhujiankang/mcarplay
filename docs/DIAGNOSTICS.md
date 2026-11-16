@@ -456,3 +456,9 @@ change the protocol decision. Bluetooth handoff, stale callbacks and transport
 termination are scoped to the owning connection. A normal CarLife stop reports
 `code=NONE` rather than the default failure label; actual source failures retain
 their error. The audio teardown hint no longer asserts a vehicle watchdog period.
+
+## 0.1.11 voice and vehicle protocol evidence
+
+`MIC:` records only format and numeric counts: `setupAccepted`, `received` (peer IP datagrams), `authenticated` (AEAD passed), `queued` (passed to the bounded PCM packetizer), `carlifeWritten` (successful encrypted 0x58001 writes), and `dropped` (bounded queue overflow). SETUP 200 is not evidence of received audio or successful CarWith recognition. Counts are scoped to the input receiver / CarLife source writer; writer counts may include several recognition attempts in the same source session. No PCM, WAV, packet hex, utterances or keys are persisted. Wake-word continuous capture is disabled; explicit recognition has a 30-second cap.
+
+`VOICE:` records Siri action enums, CarLife hard-key enums and send success, not speech. `VEHICLE:` distinguishes identity capability declarations from actual location messages and navigation subscriptions. All three forwarding flags remain false. Location and navigation CSM bodies are withheld from the VirtualIap2Link message-body diagnostic, including the generic unhandled-message path; new diagnostics contain no coordinates, destination or road names. Existing upstream raw transport traces are not a substitute for a privacy-reviewed GPS forwarding implementation.
