@@ -125,3 +125,15 @@ handling (empty-certificate guard and EC public-key OID hint). mcarplay retains
 its connection/revision guards and scopes screen retirement to its accepted
 descriptor. The OID hint is not certificate verification or vehicle acceptance.
 Existing MIT attribution remains unchanged.
+
+
+The 0.1.17 follow-up uses protocol facts from the pinned CarPToCarL 1.2.59
+commit `abf3a7d00985a6d8dabb62cd912a7cb78edaeb21` and catplay commit
+`54ab42d657330d49eacb13099de6563a2922a240` for audio descriptors and
+phone/accessory file identifier roles. LIVI and wheelplay are cross-checks for
+NowPlaying message semantics only. No GPL implementation is copied into this
+MIT application; no new third-party SDK, OEM component or reference APK is
+bundled. Existing MIT attribution remains unchanged. Source links and the
+limits of the reference evidence are in
+`docs/MERCEDES-CARLIFE-REMAINING-20261116.md` and
+`docs/MERCEDES-CARLIFE-0.1.17.md`.

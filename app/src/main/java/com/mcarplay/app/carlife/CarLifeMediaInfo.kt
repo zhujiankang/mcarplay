@@ -95,3 +95,16 @@ object CarLifeMediaParser {
         return CarLifeMediaInfo(source, song, text(3), text(4), art?.takeIf { it.isNotEmpty() }, duration.coerceIn(0, 86_400_000), text(8))
     }
 }
+
+/** Xiaomi CarLife 0x10036 uses protobuf field1 uint32 milliseconds, not a raw BE integer. */
+object CarLifeMediaProgress {
+    fun parse(payload: ByteArray): Long? =
+        runCatching {
+            require(payload.size in 2..8)
+            val (tag, tagSize) = CarLifeProtocol.readVarint(payload, 0)
+            require(tag == 8L)
+            val (value, size) = CarLifeProtocol.readVarint(payload, tagSize)
+            require(tagSize + size == payload.size && value in 0..86_400_000L)
+            value
+        }.getOrNull()
+}

@@ -1122,9 +1122,10 @@ object SessionController {
     private fun prepareCarLifeSource(
         context: Context,
         requestedSize: Pair<Int, Int>? = null,
+        requestedFps: Int? = null,
     ): CarLifeSession? {
         currentCarLifeSession?.takeIf { it.isRunning }?.let {
-            requestedSize?.let(it::updateRequestedVideoSize)
+            requestedSize?.let { size -> it.updateRequestedVideoSize(size, requestedFps) }
             return it
         }
         if (connectCancelled || disconnectCompletion != null) return null
@@ -1133,7 +1134,7 @@ object SessionController {
             releaseCarLifeSession(it)
         }
         carLifePreroll.clear()
-        val source = newFormalCarLifeSession(context, requestedSize)
+        val source = newFormalCarLifeSession(context, requestedSize, requestedFps ?: DisplayPrefs.fps(context))
         if (!claimCarLifeSession(CarLifeSessionRegistry.Owner.FORMAL, source)) return null
         armAutoPlaySuppression()
         if (!source.start()) {
@@ -1161,6 +1162,7 @@ object SessionController {
     private fun newFormalCarLifeSession(
         context: Context,
         requestedVideoSize: Pair<Int, Int>? = null,
+        requestedVideoFps: Int = DisplayPrefs.fps(context),
     ): CarLifeSession {
         lateinit var session: CarLifeSession
         session =
@@ -1253,8 +1255,10 @@ object SessionController {
                 },
                 log = { line -> appendLog(line) },
                 requestedVideoSize = requestedVideoSize,
+                requestedVideoFps = requestedVideoFps,
                 waitForDisplaySize = requestedVideoSize == null,
                 onMediaInfo = { info -> if (currentCarLifeSession === session) metadataRelay.media(session, info) },
+                onMediaProgress = { ms -> if (currentCarLifeSession === session) metadataRelay.progress(session, ms) },
                 onMicrophoneRequest = onMicrophoneRequest@{ request ->
                     if (currentCarLifeSession !== session) return@onMicrophoneRequest
                     // Returning to wake-word monitoring ends the preceding explicit recording too.
@@ -2976,11 +2980,15 @@ object SessionController {
     private fun scheduleModesReclaim(client: AirPlayClient) {
         val epoch = ++modesReclaimEpoch
         val connectionGeneration = client.connectionGeneration
+        val controlGeneration = client.networkControlGeneration
+
+        fun controlIsCurrent(): Boolean = client.networkControlGeneration == controlGeneration && client.mib3ControlSessionDone
         Bg.run("modes-reclaim") {
             val start = android.os.SystemClock.uptimeMillis()
             for (atMs in longArrayOf(1_500, 4_000, 12_000, 30_000)) {
                 while (true) {
-                    if (epoch != modesReclaimEpoch ||
+                    if (!controlIsCurrent() ||
+                        epoch != modesReclaimEpoch ||
                         client.cancelled ||
                         connectCancelled ||
                         !client.isConnectionCurrent(connectionGeneration)
@@ -2991,14 +2999,15 @@ object SessionController {
                     if (remain <= 0) break
                     Thread.sleep(minOf(remain, 200L))
                 }
-                if (epoch != modesReclaimEpoch ||
+                if (!controlIsCurrent() ||
+                    epoch != modesReclaimEpoch ||
                     client.cancelled ||
                     connectCancelled ||
                     !client.isConnectionCurrent(connectionGeneration)
                 ) {
                     return@run
                 }
-                if (!client.assertModes(expectedEpoch = connectionGeneration)) return@run
+                if (!client.assertModes(expectedEpoch = connectionGeneration, stillCurrent = ::controlIsCurrent)) return@run
                 appendLog("AIRPLAY: modesChanged 资源重申（burst 后 +${atMs / 1000}s，AADisplay r17 时序）")
             }
         }
@@ -4063,7 +4072,11 @@ object SessionController {
                         }
                         if (setup != null) {
                             // 预热只准备入口与协议；拿到真实画布后才允许源端首轮视频 INIT。
-                            prepareCarLifeSource(context, CarLifeProtocol.videoRequestFor(setup.displayWidth, setup.displayHeight))
+                            prepareCarLifeSource(
+                                context,
+                                CarLifeProtocol.videoRequestFor(setup.displayWidth, setup.displayHeight),
+                                minOf(DisplayPrefs.fps(context), (setup.maxFps.takeIf { it > 0 } ?: 30).coerceAtMost(60)),
+                            )
                             // 记录会话凭据：投影授权晚于连接时用于动态补启音频。
                             // 用 client.currentEndpoint 而非 effectiveEndpoint：配对期间
                             // mDNS 刷新过端点时，真正连上的是 client 里的地址（2026-10-18：
@@ -4571,6 +4584,7 @@ object SessionController {
                                         prepareCarLifeSource(
                                             context,
                                             CarLifeProtocol.videoRequestFor(setup.displayWidth, setup.displayHeight),
+                                            minOf(DisplayPrefs.fps(context), (setup.maxFps.takeIf { it > 0 } ?: 30).coerceAtMost(60)),
                                         )
                                     carLife = createdCarLife
                                     val claimed = createdCarLife != null

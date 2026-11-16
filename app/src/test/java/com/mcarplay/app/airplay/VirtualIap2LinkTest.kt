@@ -41,11 +41,14 @@ private fun splitLinkFrames(chunk: ByteArray): List<ByteArray> {
 }
 
 class VirtualIap2LinkTest {
-    private class Harness {
+    private class Harness(
+        strict: Boolean = false,
+    ) {
         val controlSent = ArrayList<ByteArray>()
         val allControl = ArrayList<ByteArray>()
         val eventSent = ArrayList<ByteArray>()
-        val car = Iap2LinkEngine()
+        var car = Iap2LinkEngine()
+        val writeGuards = ArrayList<() -> Boolean>()
         val link =
             VirtualIap2Link(
                 log = { },
@@ -63,6 +66,14 @@ class VirtualIap2LinkTest {
                 tickAutomatically = false,
                 nowPlayingProvider = { null },
                 nowMillis = { clock },
+                requireChallengeResponse = strict,
+                sendControlForRound = { bytes, current ->
+                    writeGuards.add(current)
+                    if (current()) {
+                        controlSent.add(bytes)
+                        allControl.add(bytes)
+                    }
+                },
             )
         var clock = 0L
         var now = 1L
@@ -140,6 +151,128 @@ class VirtualIap2LinkTest {
                         .first()
                         .value.size
                 }
+    }
+
+    @Test fun verifiedMercedesWaitsForPeerSubscriptionAndEmitsTerminatedStringsOnly() {
+        val h = Harness(strict = true)
+        var authenticated = 0
+        var completed = 0
+        h.link.onAuthenticationComplete = { authenticated++ }
+        h.link.onControlSessionComplete = { completed++ }
+        h.link.armMib3()
+        h.car.start(0)
+        h.exchangeUntilNormal()
+        h.carSends(0x1D01, Iap2Csm.string(0, "Mercedes 017 verified"))
+        assertTrue(h.carSends(0xAA03, Iap2Csm.param(0, byteArrayOf(1))).isEmpty())
+        assertEquals(0, authenticated)
+        h.carSends(0xAA01, Iap2Csm.param(0, ByteArray(613)))
+        val burst = h.carSends(0xAA03, Iap2Csm.param(0, ByteArray(68)))
+        assertEquals(listOf(0xAA05, 0x4E0C, 0x4E0A, 0x4E0B, 0x4E09), burst)
+        assertEquals(1, authenticated)
+        assertEquals(0, completed)
+        for (id in listOf(0x4E0C, 0x4E0A, 0x4E09)) {
+            val frame = Iap2Csm.Parser().offer(h.lastRawFrameOf(id)!!).single()
+            assertEquals(
+                0,
+                Iap2Csm
+                    .parseParams(frame.body)
+                    .first()
+                    .value
+                    .last()
+                    .toInt(),
+            )
+        }
+        h.carSends(0x5000)
+        h.carSends(0x4157)
+        assertEquals(1, completed)
+    }
+
+    @Test fun verifiedMercedesNeverInfersAuthenticationFromSilence() {
+        val h = Harness(strict = true)
+        h.link.pinnedMfiLength = 32
+        var completed = 0
+        h.link.onControlSessionComplete = { completed++ }
+        h.link.armMib3()
+        h.car.start(0)
+        h.exchangeUntilNormal()
+        h.carSends(0x1D01, Iap2Csm.string(0, "Mercedes 017 silent"))
+        h.carSends(0xAA01, Iap2Csm.param(0, ByteArray(613)))
+        h.clock += VirtualIap2Link.PINNED_MFI_WINDOW_MS
+        h.link.onCarBytes(Iap2LinkEngine.MARKER)
+        assertTrue(h.controlFrames().none { it.second == 0xAA05 || it.second == 0x4E0C })
+        assertTrue(h.carSends(0x5000).isEmpty())
+        assertEquals(0, completed)
+    }
+
+    private fun reset(h: Harness) {
+        val frame = byteArrayOf(0xff.toByte(), 0x5a, 0, 9, 0x10, 0, 0, 0, 0)
+        frame[8] = (-frame.take(8).sumOf { it.toInt() and 255 }).toByte()
+        h.link.onCarBytes(frame)
+    }
+
+    @Test fun deadControlLinkRecoversAfterCooldownWithFreshIdentityAndInvalidatesQueuedWrites() {
+        val h = Harness()
+        var resets = 0
+        h.link.onControlSessionReset = { resets++ }
+        h.link.armMib3()
+        h.car.start(0)
+        h.exchangeUntilNormal()
+        h.carSends(0x1D01, Iap2Csm.string(0, "First"))
+        val guards = h.writeGuards.toList()
+        reset(h)
+        assertEquals(1, resets)
+        assertTrue(guards.none { it() })
+        val before = h.allControl.size
+        h.clock += 4999
+        h.link.tick()
+        assertEquals(before, h.allControl.size)
+        h.clock++
+        h.link.tick()
+        assertEquals(before + 1, h.allControl.size)
+        assertTrue(h.allControl.last().contentEquals(Iap2LinkEngine.MARKER))
+        h.controlSent.clear()
+        h.car = Iap2LinkEngine()
+        h.car.start(h.clock)
+        h.exchangeUntilNormal()
+        val replies = h.carSends(0x1D01, Iap2Csm.string(0, "Second"))
+        assertTrue(replies.containsAll(listOf(0x1D02, 0xAA00)))
+    }
+
+    @Test fun peerResetDoesNotRecordAnInterruptedChallengeAsASilentFormat() {
+        val h = Harness()
+        val identity = "Mercedes interrupted EC017 tunnel"
+        h.link.armMib3()
+        h.car.start(0)
+        h.exchangeUntilNormal()
+        h.carSends(0x1D01, Iap2Csm.string(0, "Mercedes interrupted EC017"))
+        val oid = byteArrayOf(6, 7, 0x2a, 0x86.toByte(), 0x48, 0xce.toByte(), 0x3d, 2, 1)
+        h.carSends(0xAA01, Iap2Csm.param(0, oid))
+        assertEquals(listOf(32), h.challengeLengths())
+        reset(h)
+        h.clock += 4000
+        h.link.onCarBytes(ByteArray(0))
+        assertTrue(32 !in MfiLengthMemory.load(null, identity).silent)
+    }
+
+    @Test fun recoveryBudgetStopsRepeatedResetsFromProducingAnUnboundedHandshakeLoop() {
+        val h = Harness()
+        h.link.armMib3()
+        h.car.start(0)
+        h.exchangeUntilNormal()
+        repeat(2) {
+            reset(h)
+            h.clock += 35_000
+            h.link.tick()
+            h.controlSent.clear()
+            h.car = Iap2LinkEngine()
+            h.car.start(h.clock)
+            h.exchangeUntilNormal()
+        }
+        reset(h)
+        val before = h.allControl.size
+        h.clock += 60_000
+        repeat(10) { h.link.tick() }
+        assertEquals(before, h.allControl.size)
     }
 
     @Test fun emptyCertificateDoesNotStartChallengeAndEcHintPrefers32Bytes() {

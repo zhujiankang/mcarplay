@@ -7,6 +7,19 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class CarLifeMediaStateTest {
+    @Test fun progressIsBoundedAndNeverCarriesAcrossTracks() {
+        val state = CarLifeMediaState()
+        state.progress(9000, 0)
+        assertEquals(0L, state.positionAt(0, true))
+        state.update(song, 1000)
+        state.progress(5000, 1500)
+        assertEquals(5500L, state.positionAt(2000, true))
+        assertEquals(5000L, state.positionAt(2000, false))
+        assertEquals(8000L, state.positionAt(50000, true))
+        state.update(song.copy(songId = "different"), 51000)
+        assertEquals(0L, state.positionAt(51001, true))
+    }
+
     @Test fun uncorrelatedLyricsCannotCrossSongsOrApplicationsAndPrefixArtistIsNotEnough() {
         val state = CarLifeMediaState()
         state.update(song, 1000)

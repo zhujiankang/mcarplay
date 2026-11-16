@@ -278,7 +278,8 @@ class AirPlayClient(
     private var closingConnections = 0
 
     /** RECORD 和网络 iAP 认证均完成，软件接收端才可在首帧前释放蓝牙。 */
-    val networkHandoffReady: Boolean get() = recordAccepted && networkIapAuthenticated
+    val networkHandoffReady: Boolean
+        get() = recordAccepted && networkIapAuthenticated && (!mib3LinkArmed || mib3ControlSessionDone)
 
     /** 仅用于承载交接保护，不等于网络 iAP 认证或媒体已通过。 */
     val networkSessionEstablished: Boolean
@@ -706,6 +707,7 @@ class AirPlayClient(
                 screenStreamUuid = null
                 screenStreamConnectionId = null
                 outputAudioStreams.clear()
+                inputAudioStreams.clear()
                 sessionStopping = true
                 recordAttempt?.complete(false)
                 recordAttempt = null
@@ -937,15 +939,22 @@ class AirPlayClient(
     fun assertModes(
         releaseScreen: Boolean = false,
         expectedEpoch: Long = connectionEpoch,
+        stillCurrent: () -> Boolean = { true },
     ): Boolean =
         synchronized(modesPublicationLock) {
-            publishModes(modes.parameters(releaseScreen), if (releaseScreen) "让出主屏，随后拿回" else modes.describe(), expectedEpoch)
+            publishModes(
+                modes.parameters(releaseScreen),
+                if (releaseScreen) "让出主屏，随后拿回" else modes.describe(),
+                expectedEpoch,
+                stillCurrent,
+            )
         }
 
     private fun publishModes(
         parameters: Map<String, Any?>,
         state: String,
         expectedEpoch: Long,
+        stillCurrent: () -> Boolean = { true },
     ): Boolean {
         val body =
             BinaryPlist.encode(
@@ -962,6 +971,7 @@ class AirPlayClient(
                     body,
                     contentType = "application/x-apple-binary-plist",
                     expectedEpoch = expectedEpoch,
+                    stillCurrent = stillCurrent,
                 )
             val responseShape =
                 if (response.isEmpty()) {
@@ -972,7 +982,7 @@ class AirPlayClient(
                 }
             log("AIRPLAY: modesChanged（$state）[$statusLine]$responseShape")
             val protocolStatus = runCatching { (BinaryPlist.parse(response) as? Map<*, *>)?.get("status") as? Number }.getOrNull()?.toLong()
-            statusLine.split(' ').getOrNull(1) == "200" && (protocolStatus == null || protocolStatus == 0L)
+            statusLine.split(' ').getOrNull(1) == "200" && (protocolStatus == null || protocolStatus == 0L) && stillCurrent()
         } catch (error: IOException) {
             log("AIRPLAY: modesChanged 失败 - ${error.message}")
             false
@@ -1842,9 +1852,13 @@ class AirPlayClient(
     var mib3LinkArmed: Boolean = false
         private set
 
-    /** MIB3 控制会话是否完成过（auth+burst 已发）。 */
+    /** MIB3 控制会话是否已由初始化后的对端订阅确认。 */
     @Volatile
     var mib3ControlSessionDone: Boolean = false
+        private set
+
+    @Volatile
+    var networkControlGeneration: Long = 0
         private set
 
     /** 虚拟链路唯一实例（出站路由/三形态语义见 [VirtualIap2Link]）。 */
@@ -1868,6 +1882,8 @@ class AirPlayClient(
                             }
                         },
                         alive = { isSessionAlive(epoch) },
+                        requireChallengeResponse = isMercedesReceiver(),
+                        sendControlForRound = { data, current -> postControlIap(data, expectedEpoch = epoch, stillCurrent = current) },
                     ).also { created ->
                         created.pinnedMfiLength = receiverCompatibility().pinnedMfiChallengeLength
                         created.onMediaKey = { keyCode ->
@@ -1882,6 +1898,15 @@ class AirPlayClient(
                         created.onAuthenticationComplete = {
                             synchronized(this) {
                                 if (iapLink === created && isSessionAlive(epoch)) networkIapAuthenticated = true
+                            }
+                        }
+                        created.onControlSessionReset = {
+                            synchronized(this) {
+                                if (iapLink === created && isSessionAlive(epoch)) {
+                                    networkIapAuthenticated = false
+                                    mib3ControlSessionDone = false
+                                    networkControlGeneration++
+                                }
                             }
                         }
                         created.onControlSessionComplete = {
@@ -1963,6 +1988,7 @@ class AirPlayClient(
     fun postControlIap(
         frame: ByteArray,
         expectedEpoch: Long = connectionEpoch,
+        stillCurrent: () -> Boolean = { true },
     ) {
         val stopTransmissions = stopIapTransmissions.get()
         val epoch =
@@ -1974,6 +2000,7 @@ class AirPlayClient(
             controlIapTx.submit(
                 java.util.concurrent.Callable {
                     try {
+                        if (!stillCurrent()) return@Callable false
                         val body =
                             BinaryPlist.encode(
                                 linkedMapOf(
@@ -1990,6 +2017,7 @@ class AirPlayClient(
                                 contentType = "application/x-apple-binary-plist",
                                 expectedEpoch = epoch,
                                 allowDuringStop = stopTransmissions != null,
+                                stillCurrent = stillCurrent,
                             )
                         controlIapCount++
                         val head =
@@ -2000,7 +2028,7 @@ class AirPlayClient(
                         }
                         // 车机可能把链路字节直接塞在应答体里（而不是另发事件通道）：认出来就喂给
                         // 链路引擎，别让它白躺在响应里。
-                        val currentLink = synchronized(this) { if (isSessionAlive(epoch)) iapLink else null }
+                        val currentLink = synchronized(this) { if (isSessionAlive(epoch) && stillCurrent()) iapLink else null }
                         if (currentLink != null && reply.isNotEmpty() && looksLikeIapLink(reply)) {
                             log("IAPLINK: 控制通道应答内含链路字节 ${reply.size}B → 喂给链路引擎")
                             currentLink.onCarBytes(reply)
@@ -2371,6 +2399,7 @@ class AirPlayClient(
     }
 
     private val outputAudioStreams = java.util.concurrent.ConcurrentHashMap<Long, Long>()
+    private val inputAudioStreams = java.util.concurrent.ConcurrentHashMap<Long, Long>()
 
     /** Only accepted output descriptors are retired; no screen, session or microphone wildcard teardown. */
     internal fun teardownOutputAudio(expectedEpoch: Long): Boolean {
@@ -2418,33 +2447,94 @@ class AirPlayClient(
     /** Dedicated input stream: keep media type102 untouched and use only advertised speech-input PCM.
      * A local UDP port must exist before SETUP. No probing unsupported media input formats.
      */
+    internal data class MicrophoneStream(
+        val accepted: Boolean,
+        val usable: Boolean = accepted,
+        val dataPort: Int = 0,
+        val controlPort: Int = 0,
+        val portOnly: Boolean = false,
+    )
+
     internal fun setupMicrophone(
         profile: com.mcarplay.app.audio.MicrophoneProfile,
         connectionId: Long,
         localPort: Int,
         epoch: Long,
         controlPort: Int? = null,
-    ): Boolean {
-        if (!isConnectionCurrent(epoch) || microphoneProfile() != profile) return false
-        val stream = microphoneDescription(profile, connectionId, localPort, controlPort)
-        val host = activeHost ?: return false
-        val (status, response) =
-            request(
-                "SETUP",
-                "rtsp://$host:${endpoint.airPlayPort}/",
-                BinaryPlist.encode(mapOf("streams" to listOf(stream))),
-                timeoutMillis = 5_000,
-                contentType = "application/x-apple-binary-plist",
-                expectedEpoch = epoch,
+    ): Boolean = openMicrophone(profile, connectionId, localPort, epoch, controlPort).accepted
+
+    /** At most one port-only retry, only for the verified Mercedes duplex capability after RTSP400. */
+    internal fun openMicrophone(
+        profile: com.mcarplay.app.audio.MicrophoneProfile,
+        connectionId: Long,
+        localPort: Int,
+        epoch: Long,
+        controlPort: Int? = null,
+        allowPortFallback: Boolean = false,
+        current: () -> Boolean = { true },
+    ): MicrophoneStream {
+        if (!isConnectionCurrent(epoch) || microphoneProfile() != profile || !current() || inputAudioStreams.isNotEmpty()) {
+            return MicrophoneStream(false)
+        }
+        val duplexDeclared =
+            (negotiatedInfo?.get("audioFormats") as? List<*>)?.any { entry ->
+                val item = entry as? Map<*, *> ?: return@any false
+                (item["type"] as? Number)?.toLong() == 100L &&
+                    item["audioType"] == "speechRecognition" &&
+                    (((item["audioInputFormats"] as? Number)?.toLong() ?: 0L) and profile.format) != 0L &&
+                    (((item["audioOutputFormats"] as? Number)?.toLong() ?: 0L) and profile.format) != 0L
+            } == true
+        val host = activeHost ?: return MicrophoneStream(false)
+        for (portOnly in listOf(false, true)) {
+            if (portOnly && (!allowPortFallback || !isMercedesReceiver() || !duplexDeclared)) break
+            if (!current() || !isConnectionCurrent(epoch)) break
+            val description = microphoneDescription(profile, connectionId, localPort, controlPort, if (portOnly) null else true)
+            val (status, response) =
+                request(
+                    "SETUP",
+                    "rtsp://$host:${endpoint.airPlayPort}/",
+                    BinaryPlist.encode(mapOf("streams" to listOf(description))),
+                    timeoutMillis = 5_000,
+                    contentType = "application/x-apple-binary-plist",
+                    expectedEpoch = epoch,
+                    stillCurrent = current,
+                )
+            val root = runCatching { BinaryPlist.parse(response) as? Map<*, *> }.getOrNull()
+            val protocolStatus = (root?.get("status") as? Number)?.toLong()
+            val rtspStatus = status.split(' ').getOrNull(1)
+            val accepted = rtspStatus == "200" && (protocolStatus == null || protocolStatus == 0L) && isConnectionCurrent(epoch)
+            log(
+                "MIC: setupAccepted=$accepted rtspStatus=$rtspStatus protocolStatus=$protocolStatus " +
+                    "model=${if (portOnly) "PORT_ONLY" else "INPUT_FLAG"} type=100 format=0x${profile.format.toString(16)}",
             )
-        val protocolStatus = runCatching { (BinaryPlist.parse(response) as? Map<*, *>)?.get("status") as? Number }.getOrNull()?.toLong()
-        val accepted =
-            status.split(' ').getOrNull(1) == "200" && (protocolStatus == null || protocolStatus == 0L) && isConnectionCurrent(epoch)
-        log(
-            "MIC: setupAccepted=$accepted rtspStatus=${status.split(' ').getOrNull(1)} protocolStatus=$protocolStatus " +
-                "controlPortDeclared=${controlPort != null} type=100 audioType=speechRecognition format=0x${profile.format.toString(16)}",
-        )
-        return accepted
+            if (!accepted) {
+                if (rtspStatus == "400" && !portOnly) continue
+                return MicrophoneStream(false)
+            }
+            val streams = root?.get("streams") as? List<*>
+            val stream =
+                streams?.filterIsInstance<Map<*, *>>()?.firstOrNull {
+                    (it["type"] as? Number)?.toLong() == 100L &&
+                        ((it["streamConnectionID"] as? Number)?.toLong()?.let { id -> id == connectionId } != false)
+                }
+            if (streams != null && stream == null) return MicrophoneStream(false)
+            if ((stream?.get("status") as? Number)?.toLong()?.let { it != 0L } == true) return MicrophoneStream(false)
+            synchronized(this) {
+                if (!isConnectionCurrent(epoch)) return MicrophoneStream(false)
+                inputAudioStreams[connectionId] = epoch
+            }
+            val data = if (duplexDeclared) portOf(stream?.get("dataPort")) else 0
+            val control = if (duplexDeclared) portOf(stream?.get("controlPort")) else 0
+            val formatMatches =
+                ((stream?.get("audioFormat") as? Number)?.toLong()?.let { it == profile.format } != false) &&
+                    ((stream?.get("sr") as? Number)?.toInt()?.let { it == profile.sampleRate } != false) &&
+                    ((stream?.get("ch") as? Number)?.toInt()?.let { it == 1 } != false)
+            val portValid = !duplexDeclared || stream?.containsKey("dataPort") != true || data > 0
+            val usable = formatMatches && portValid && (!portOnly || data > 0)
+            log("MIC: descriptor accepted usable=$usable duplexDownlink=${data > 0} portOnly=$portOnly")
+            return MicrophoneStream(true, usable, data, control, portOnly)
+        }
+        return MicrophoneStream(false)
     }
 
     internal fun teardownMicrophone(
@@ -2454,7 +2544,7 @@ class AirPlayClient(
         if (!isConnectionCurrent(epoch)) return false
         val host = activeHost ?: return false
         val stream = mapOf("type" to 100L, "streamConnectionID" to connectionId)
-        val (status, _) =
+        val (status, response) =
             request(
                 "TEARDOWN",
                 "rtsp://$host:${endpoint.airPlayPort}/",
@@ -2463,7 +2553,10 @@ class AirPlayClient(
                 contentType = "application/x-apple-binary-plist",
                 expectedEpoch = epoch,
             )
-        return status.contains("200")
+        val logical = runCatching { (BinaryPlist.parse(response) as? Map<*, *>)?.get("status") as? Number }.getOrNull()?.toLong()
+        val accepted = status.split(' ').getOrNull(1) == "200" && (logical == null || logical == 0L) && isConnectionCurrent(epoch)
+        if (accepted) inputAudioStreams.remove(connectionId, epoch)
+        return accepted
     }
 
     internal fun isMercedesReceiver(): Boolean =
@@ -2489,6 +2582,7 @@ class AirPlayClient(
         connectionId: Long,
         localPort: Int,
         controlPort: Int? = null,
+        inputFlag: Boolean? = true,
     ): Map<String, Any?> {
         require(connectionId > 0 && localPort in 1..65535)
         require(controlPort == null || controlPort in 1..65535)
@@ -2498,11 +2592,16 @@ class AirPlayClient(
             "audioType" to "speechRecognition",
             "audioFormat" to profile.format,
             "audioLatencyMs" to 250L,
-            "input" to true,
+            "ct" to 1L,
+            "sr" to profile.sampleRate.toLong(),
+            "spf" to (profile.sampleRate / 50).toLong(),
             "dataPort" to localPort.toLong(),
             "supportsRTPPacketRedundancy" to false,
             "supportsHighAccuracyTimestamps" to false,
-        ).apply { if (controlPort != null) put("controlPort", controlPort.toLong()) }
+        ).apply {
+            if (controlPort != null) put("controlPort", controlPort.toLong())
+            if (inputFlag != null) put("input", inputFlag)
+        }
     }
 
     /**
@@ -2849,7 +2948,9 @@ class AirPlayClient(
         snapshot.third?.let { stream["streamConnectionID"] = it }
         val success = sendTeardown(linkedMapOf("streams" to listOf(stream)), "屏幕流", snapshot.first)
         synchronized(this) {
-            if (success && connectionEpoch == snapshot.first && screenStreamUuid == snapshot.second &&
+            if (success &&
+                connectionEpoch == snapshot.first &&
+                screenStreamUuid == snapshot.second &&
                 screenStreamConnectionId == snapshot.third
             ) {
                 screenStreamUuid = null
@@ -3393,6 +3494,7 @@ class AirPlayClient(
         extraHeaders: List<Pair<String, String>> = emptyList(),
         expectedEpoch: Long? = null,
         allowDuringStop: Boolean = false,
+        stillCurrent: () -> Boolean = { true },
     ): Pair<String, ByteArray> {
         val client = socket ?: throw IOException("未连接")
         // 主线程上 socket 写会抛 NetworkOnMainThreadException，而那时报文已加密、计数已前移：
@@ -3412,6 +3514,7 @@ class AirPlayClient(
             if (client !== socket || (expectedEpoch != null && expectedEpoch != connectionEpoch)) {
                 throw IOException("控制连接已更替（$method $path）")
             }
+            if (!stillCurrent()) throw IOException("控制子会话已更替（$method $path）")
             if (sessionStopping && !allowDuringStop) throw IOException("会话正在结束（$method $path）")
             startReader(client)
             cseq = ++cSeq

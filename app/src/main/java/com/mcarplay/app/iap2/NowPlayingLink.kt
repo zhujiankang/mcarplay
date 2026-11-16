@@ -19,7 +19,7 @@ internal class NowPlayingLink(
     private var lastSent: ByteArray? = null
     private var imageKey: String? = null
     private var imageId: Int? = null
-    private var nextId = 1
+    private var nextId = 128
     private var pending: ByteArray? = null
     private var setupSent = false
     private var started = false
@@ -27,12 +27,26 @@ internal class NowPlayingLink(
     private var offset = 0
     private var deadline = 0L
     private var artworkUnavailable = false
-    private var artworkRequests = 0
+    private var seekRequests = 0
+    private var itemRequests: Set<Int>? = null
+    private var playbackRequests: Set<Int>? = null
     private var updates = 0L
 
-    fun control(frame: Iap2Csm.Frame): Boolean =
-        when (frame.messageId) {
+    fun control(frame: Iap2Csm.Frame): Boolean {
+        return when (frame.messageId) {
             0x5000 -> {
+                val groups = strictParams(frame.body)
+                val item = groups?.firstOrNull { it.id == 0 }?.let { strictParams(it.value) }
+                val playback = groups?.firstOrNull { it.id == 1 }?.let { strictParams(it.value) }
+                if (groups == null ||
+                    (groups.any { it.id == 0 } && item == null) ||
+                    (groups.any { it.id == 1 } && playback == null)
+                ) {
+                    log("MEDIA-BRIDGE: invalid subscription ignored")
+                    return true
+                }
+                itemRequests = if (frame.body.isEmpty()) null else item?.map { it.id }?.toSet().orEmpty()
+                playbackRequests = if (frame.body.isEmpty()) null else playback?.map { it.id }?.toSet().orEmpty()
                 subscribed = true
                 failed = false
                 cancelArtwork()
@@ -51,13 +65,32 @@ internal class NowPlayingLink(
                 true
             }
             0x5003 -> {
-                // Artwork size/format attributes are receipt evidence; current output is bounded JPEG.
-                artworkRequests++
-                log("MEDIA-BRIDGE: artworkAttributesReceived=$artworkRequests")
+                // SetNowPlayingInformation requests a seek, not artwork attributes. Seek is not advertised.
+                seekRequests++
+                log("MEDIA-BRIDGE: seekRequestUnsupported count=$seekRequests")
                 true
             }
             else -> false
         }
+    }
+
+    fun resetForLink() {
+        subscribed = false
+        failed = false
+        lastPoll = null
+        lastSent = null
+        imageKey = null
+        imageId = null
+        nextId = 128
+        pending = null
+        setupSent = false
+        started = false
+        delivered = false
+        offset = 0
+        artworkUnavailable = false
+        itemRequests = null
+        playbackRequests = null
+    }
 
     fun transportFailure() {
         if (failed) return
@@ -78,16 +111,19 @@ internal class NowPlayingLink(
         if (lastPoll == null || time - lastPoll!! >= 1_000) {
             lastPoll = time
             val snapshot = provider() ?: CarMediaSnapshot()
-            val key = snapshot.artworkKey.takeIf { snapshot.artwork?.size in 1..MAX_ARTWORK }
+            val key =
+                snapshot.artworkKey.takeIf {
+                    snapshot.artwork?.size in 1..MAX_ARTWORK && (itemRequests == null || 26 in itemRequests!!)
+                }
             if (key != imageKey) {
                 cancelArtwork()
                 imageKey = key
-                imageId = if (key != null && fileSupported() && !artworkUnavailable && nextId <= 255) nextId++ else null
+                imageId = if (key != null && fileSupported() && !artworkUnavailable && nextId <= 254) nextId++ else null
                 pending = snapshot.artwork?.takeIf { imageId != null }
                 delivered = false
             }
             val id = imageId.takeIf { !artworkUnavailable && fileSupported() }
-            val payload = encode(snapshot, id, maximumPayload()) ?: return
+            val payload = encode(snapshot, id, maximumPayload(), itemRequests, playbackRequests) ?: return
             if (lastSent?.contentEquals(payload) != true) {
                 if (!sendControl(payload)) {
                     lastPoll = null
@@ -97,7 +133,8 @@ internal class NowPlayingLink(
                 updates++
                 if (updates <= 3 || updates and (updates - 1) == 0L) {
                     log(
-                        "MEDIA-BRIDGE: updatesQueued=$updates artworkDeclared=${id != null} lyricCompatibility=${snapshot.lyricCompatibility}",
+                        "MEDIA-BRIDGE: updatesQueued=$updates artworkDeclared=${id != null} " +
+                            "lyricCompatibility=${snapshot.lyricCompatibility}",
                     )
                 }
             }
@@ -164,10 +201,21 @@ internal class NowPlayingLink(
     companion object {
         const val MAX_ARTWORK = 131_072
 
+        private fun strictParams(body: ByteArray): List<Iap2Csm.Param>? {
+            val fields = Iap2Csm.parseParams(body)
+            return fields.takeIf {
+                it.size <= 64 &&
+                    it.sumOf { field -> field.value.size + 4 } == body.size &&
+                    it.map { field -> field.id }.toSet().size == it.size
+            }
+        }
+
         fun encode(
             value: CarMediaSnapshot,
             artworkId: Int?,
             maxPayload: Int,
+            itemRequests: Set<Int>? = null,
+            playbackRequests: Set<Int>? = null,
         ): ByteArray? {
             if (maxPayload < 100) return null
             val budget = ((maxPayload - 100) / 4).coerceIn(0, 384)
@@ -185,11 +233,27 @@ internal class NowPlayingLink(
                 id: Int,
                 value: Long,
             ) = Iap2Csm.u32(id, value.coerceIn(0, 0xFFFFFFFFL))
-            var item = text(1, value.title) + time(4, value.durationMs) + text(6, value.album) + text(12, value.artist)
-            item += Iap2Csm.u8(26, artworkId?.takeIf { it in 1..255 } ?: 0)
+            val item =
+                listOf(
+                    1 to text(1, value.title),
+                    4 to time(4, value.durationMs),
+                    6 to text(6, value.album),
+                    12 to text(12, value.artist),
+                    26 to Iap2Csm.u8(26, artworkId?.takeIf { it in 128..254 } ?: 0),
+                ).filter { itemRequests == null || it.first in itemRequests }.fold(ByteArray(0)) { out, field ->
+                    out + field.second
+                }
             val playback =
-                Iap2Csm.u8(0, value.status.coerceIn(0, 2)) + time(1, value.elapsedMs) +
-                    Iap2Csm.u8(5, 0) + Iap2Csm.u8(6, 0) + text(7, value.app)
+                listOf(
+                    0 to Iap2Csm.u8(0, value.status.coerceIn(0, 2)),
+                    1 to time(1, value.elapsedMs),
+                    5 to Iap2Csm.u8(5, 0),
+                    6 to Iap2Csm.u8(6, 0),
+                    7 to text(7, value.app),
+                    13 to Iap2Csm.u8(13, 0), // No seek route to the source is advertised.
+                ).filter { playbackRequests == null || it.first in playbackRequests }.fold(ByteArray(0)) { out, field ->
+                    out + field.second
+                }
             return Iap2Csm.encode(0x5001, Iap2Csm.param(0, item) + Iap2Csm.param(1, playback)).takeIf { it.size <= maxPayload }
         }
     }

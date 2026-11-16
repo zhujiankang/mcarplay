@@ -19,6 +19,7 @@ class CarLifeCommandRouter(
         /** 0=end, 1=wake-word monitoring, 2=explicit recognition. */
         val microphone: Int? = null,
         val mediaInfo: List<CarLifeMediaInfo> = emptyList(),
+        val mediaProgressMs: Long? = null,
     )
 
     /** 只在命令读取线程上访问。 */
@@ -60,6 +61,7 @@ class CarLifeCommandRouter(
             0x10023 -> Result(microphone = 0, log = "MIC: CarLife requested recording end")
             0x10024 -> Result(microphone = 2, log = "MIC: CarLife requested recognition input")
             0x10035 -> Result(mediaInfo = CarLifeMediaParser.parse(frame.payload))
+            0x10036 -> Result(mediaProgressMs = CarLifeMediaProgress.parse(frame.payload))
             0x10030 -> Result(log = "VEHICLE: CarLife next-turn message received; clusterNavigationForwarding=false")
             0x10031, 0x10033, 0x10034 ->
                 Result(log = "VEHICLE: CarLife vehicle-data request kind=0x${frame.kind.toString(16)}; forwarding=false")

@@ -8,6 +8,8 @@ internal class CarLifeMediaState {
         private set
     private var lyric: CarLifeMediaInfo? = null
     private var lyricAt = 0L
+    private var progressMs: Long? = null
+    private var progressAt = 0L
 
     fun update(
         info: CarLifeMediaInfo,
@@ -31,7 +33,30 @@ internal class CarLifeMediaState {
                 base.artist != info.artist ||
                 base.songId != info.songId
         song = if (!changed && info.artwork == null) info.copy(artwork = base?.artwork) else info
-        if (changed) lyric = null
+        if (changed) {
+            lyric = null
+            progressMs = null
+        }
+    }
+
+    fun progress(
+        positionMs: Long,
+        now: Long,
+    ) {
+        val base = song ?: return
+        if (positionMs !in 0..86_400_000L) return
+        progressMs = if (base.durationMs > 0) positionMs.coerceAtMost(base.durationMs) else positionMs
+        progressAt = now
+    }
+
+    fun positionAt(
+        now: Long,
+        playing: Boolean,
+    ): Long {
+        val position = progressMs ?: return 0
+        val elapsed = if (playing) (now - progressAt).coerceIn(0, 3_000) else 0
+        val value = position + elapsed
+        return song?.durationMs?.takeIf { it > 0 }?.let(value::coerceAtMost) ?: value
     }
 
     fun lyricTitle(

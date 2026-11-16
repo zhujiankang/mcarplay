@@ -76,6 +76,14 @@ internal class MediaMetadataRelay(
     }
 
     @Synchronized
+    fun progress(
+        source: Any,
+        positionMs: Long,
+    ) {
+        if (owner === source) state.progress(positionMs, SystemClock.elapsedRealtime())
+    }
+
+    @Synchronized
     fun playback(
         source: Any,
         playing: Boolean,
@@ -95,9 +103,10 @@ internal class MediaMetadataRelay(
                 val song = state.song
                 val playing = session?.playing ?: (lastPcm >= 0 && time - lastPcm in 0..3_000)
                 val lyric = state.lyricTitle(time, playing && MediaPrefs.clusterLyrics(context), session?.title, session?.artist)
-                Triple(song, playing, lyric)
+                Pair(Triple(song, playing, lyric), state.positionAt(time, playing))
             }
-        val song = data.first
+        val input = data.first
+        val song = input.first
         val matching =
             session == null ||
                 (
@@ -135,16 +144,16 @@ internal class MediaMetadataRelay(
         if (!cached.first && inputKey != null) log("MEDIA-BRIDGE: artworkNormalized=${cover != null} bytes=${cover?.size ?: 0}")
         val snapshot =
             CarMediaSnapshot(
-                title = data.third ?: session?.title ?: song?.song.orEmpty(),
+                title = input.third ?: session?.title ?: song?.song.orEmpty(),
                 artist = session?.artist ?: song?.artist.orEmpty(),
                 album = session?.album ?: song?.album.orEmpty(),
                 app = session?.pkg ?: song?.source.orEmpty(),
                 durationMs = session?.durationMs ?: song?.durationMs ?: 0,
-                elapsedMs = session?.displayPositionAt(time) ?: 0,
-                status = if (data.second) 1 else 2,
+                elapsedMs = session?.displayPositionAt(time) ?: data.second,
+                status = if (input.second) 1 else 2,
                 artwork = cover,
                 artworkKey = cover?.let(::hash),
-                lyricCompatibility = data.third != null,
+                lyricCompatibility = input.third != null,
             )
         synchronized(this) {
             if (epoch != generation || owner == null || state.song !== song) return

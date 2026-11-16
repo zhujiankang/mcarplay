@@ -45,12 +45,14 @@ class CarLifeSession(
     private val waitForDisplaySize: Boolean = false,
     private val onMicrophoneRequest: (Int) -> Unit = {},
     private val onMediaInfo: (CarLifeMediaInfo) -> Unit = {},
+    private val onMediaProgress: (Long) -> Unit = {},
+    requestedVideoFps: Int = CarLifeProtocol.DEFAULT_FPS,
 ) {
     private val appContext: Application = application
     internal val lease = CarLifeSessionLease()
     private val running = AtomicBoolean(false)
     private val sourceRun = UUID.randomUUID().toString().take(8)
-    private val videoRequest = CarLifeVideoRequest(requestedVideoSize, waitForDisplaySize)
+    private val videoRequest = CarLifeVideoRequest(requestedVideoSize, waitForDisplaySize, requestedVideoFps)
     private val stateMachine =
         CarLifeStateMachine(
             CarLifeAuthVerifier.xiaomi(),
@@ -59,6 +61,7 @@ class CarLifeSession(
         )
     private val commandRouter = CarLifeCommandRouter(stateMachine)
     private val videoParser = CarLifeVideoParser()
+    private val videoPipeline = CarLifeVideoPipelineStats()
     private val audioParsers =
         listOf(CarLifeChannel.MEDIA, CarLifeChannel.TTS, CarLifeChannel.VOICE)
             .associateWith { CarLifeAudioParser() }
@@ -243,8 +246,11 @@ class CarLifeSession(
 
     /** 车机 /info 到达后更新申请，不重开 CarWith，不重复发送已经发过的 INIT。 */
     @Synchronized
-    fun updateRequestedVideoSize(size: Pair<Int, Int>) {
-        if (!videoRequest.update(size.first, size.second)) return
+    fun updateRequestedVideoSize(
+        size: Pair<Int, Int>,
+        fps: Int? = null,
+    ) {
+        if (!videoRequest.update(size.first, size.second, fps ?: videoRequest.requestedFps)) return
         log("CARLIFE: 自动适配车机画布 ${videoRequest.requestedSize.first}x${videoRequest.requestedSize.second}")
         if (running.get() && stateMachine.deviceInfo != null && stateMachine.state != CarLifeStateMachine.State.FAILED) {
             sendAction(CarLifeStateMachine.Action(CarLifeProtocol.HU_INFO, CarLifeProtocol.huInfoPayload(videoRequest.requestedSize)))
@@ -430,7 +436,10 @@ class CarLifeSession(
         result.log?.let { message -> log(message) }
         result.actions.forEach(::sendAction)
         if (result.returnToCar) onReturnToCar()
-        if (stateMachine.state == CarLifeStateMachine.State.VIDEO_RUNNING) result.mediaInfo.forEach(onMediaInfo)
+        if (stateMachine.state == CarLifeStateMachine.State.VIDEO_RUNNING) {
+            result.mediaInfo.forEach(onMediaInfo)
+            result.mediaProgressMs?.let(onMediaProgress)
+        }
         result.microphone?.let { request ->
             if (stateMachine.state == CarLifeStateMachine.State.VIDEO_RUNNING) onMicrophoneRequest(request)
         }
@@ -454,8 +463,8 @@ class CarLifeSession(
     private fun requestVideoInitIfReady() {
         if (!running.get()) return
         val (width, height) = videoRequest.takeInitialSize(stateMachine.canInitializeVideo) ?: return
-        log("CARLIFE: 请求编码尺寸 ${width}x$height（以 VIDEO_INIT_DONE 和 SPS 返回为准）")
-        stateMachine.requestVideoInit(width, height).forEach(::sendAction)
+        log("CARLIFE: 请求编码尺寸 ${width}x$height@${videoRequest.requestedFps}（以 VIDEO_INIT_DONE 和实际帧统计为准）")
+        stateMachine.requestVideoInit(width, height, videoRequest.requestedFps).forEach(::sendAction)
     }
 
     private fun startChannelReader(channel: CarLifeChannel) {
@@ -467,7 +476,11 @@ class CarLifeSession(
                 while (running.get()) {
                     val frame = readCarLifeSocket(input, channel.port)
                     if (channel == CarLifeChannel.VIDEO) {
+                        videoPipeline.packet(System.nanoTime(), frame.payload.size)
                         handleVideo(frame)
+                        videoPipeline.poll(System.nanoTime())?.let {
+                            log("$it requestedFps=${videoRequest.requestedFps} negotiatedFps=${stateMachine.videoFormat?.fps ?: 0}")
+                        }
                     } else if (channel != CarLifeChannel.COMMAND) {
                         handleAudio(frame)
                     }
@@ -497,7 +510,10 @@ class CarLifeSession(
             } else {
                 frame.payload
             }
-        videoParser.push(frame.timestamp.toLong() and 0xFFFF_FFFFL, payload).forEach { accessUnit ->
+        val parseStart = System.nanoTime()
+        val units = videoParser.push(frame.timestamp.toLong() and 0xFFFF_FFFFL, payload)
+        videoPipeline.parsed(units.size, System.nanoTime() - parseStart)
+        units.forEach { accessUnit ->
             stats.record(accessUnit)
             accessUnit.dimensions()?.let { (width, height) ->
                 videoWidth = width
@@ -507,7 +523,9 @@ class CarLifeSession(
             if (snapshot.frames == 1L || accessUnit.keyFrame) {
                 log("CARLIFE: 视频帧 #${snapshot.frames} ${videoInfo()} ${snapshot.summary()}")
             }
+            val callbackStart = System.nanoTime()
             onAccessUnit(accessUnit)
+            videoPipeline.callback(System.nanoTime() - callbackStart)
         }
     }
 

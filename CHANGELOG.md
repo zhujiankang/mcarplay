@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — mercedes-carlife (0.1.17)
+
+Validation: standard 1061 + remote bridge 24 tests passed (0 failures/errors/skips); Spotless, standard lint (0 errors), standard debug build and same-certificate APK verification passed. Vehicle acceptance remains pending.
+
+English: Recover failed network-iAP2 independently with bounded cooldown, fresh engine/subscriptions and stale-write guards. Confirm initialization from actual peer subscriptions; require a challenge response for the verified Mercedes identity and stop treating silence as success. Terminate initialization strings and suppress historical unused Mercedes vehicle bursts. Allocate phone artwork IDs in the high range, honor media subscriptions, correct 0x5003 seek semantics, and relay CarLife protobuf progress. Add accepted duplex speech descriptors, one capability-checked RTSP400 port-only retry, mono silence/sync clocks and scoped input retirement. Propagate source FPS capped by the receiver and add numeric pipeline diagnostics. Retain Home/camera lifecycle handling; actual microphone recognition, cluster rendering and sustained display FPS remain unverified.
+
+简体中文：网络iAP2失败后有界独立重建，引擎/订阅重新协商，隔离旧轮排队写入；由对端真实订阅确认完成，已核对奔驰要求挑战应答，不把静默视为成功。补NUL字符串，停发未使用的奔驰历史车辆突发。手机封面使用高位编号，遵守订阅字段，更正0x5003进度语义，接入CarLife protobuf播放进度。补双向语音描述符、按能力限制的一次400端口式重试、单声道静音/同步时钟及输入精确退役。按车机上限传递源端FPS，增加数值化分段诊断。保留主页/倒车流程；实际识别、仪表显示和持续显示帧率仍待实车确认。
+
 ## Unreleased — mercedes-carlife (0.1.16)
 
 Validation: standard 1037 + remote bridge 24 tests passed (0 failures/errors/skips); Spotless, standard lint (0 errors), standard debug APK build and same-certificate verification passed. Vehicle acceptance is pending.

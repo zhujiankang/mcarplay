@@ -48,9 +48,17 @@ class VirtualIap2Link(
     private val nowMillis: () -> Long = { System.nanoTime() / 1_000_000L },
     private val nowPlayingProvider: () -> com.mcarplay.app.media.CarMediaSnapshot? = { com.mcarplay.app.media.CarMediaState.current },
     private val tickAutomatically: Boolean = true,
+    private val requireChallengeResponse: Boolean = false,
+    private val sendControlForRound: ((ByteArray, () -> Boolean) -> Unit)? = null,
 ) {
     private val lock = Any()
-    private val engine = Iap2LinkEngine()
+    private var engine = Iap2LinkEngine()
+
+    @Volatile private var roundRevision = 0L
+    private var recoveryAt: Long? = null
+    private var recoveryAttempts = 0
+    private var lastRecoveryAt: Long? = null
+    private var initializationSent = false
     private val nowPlaying =
         com.mcarplay.app.iap2.NowPlayingLink(
             provider = nowPlayingProvider,
@@ -58,11 +66,13 @@ class VirtualIap2Link(
             sendFile = { engine.sendFileTransfer(it, nowMillis()) },
             maximumPayload = { engine.maximumPayload },
             fileSupported = { engine.fileTransferSessionId != null },
-            ready = { alive() && engine.state == Iap2LinkEngine.State.NORMAL },
+            ready = {
+                alive() && engine.state == Iap2LinkEngine.State.NORMAL && (!requireChallengeResponse || authenticationNotified)
+            },
             now = nowMillis,
             log = log,
         )
-    private val parser = Iap2Csm.Parser()
+    private var parser = Iap2Csm.Parser()
     private var frameCount = 0
     private var eaCount = 0
     private var started = false
@@ -169,12 +179,16 @@ class VirtualIap2Link(
     private var mfiFinished = false
     private var authenticationNotified = false
 
-    init {
+    private fun configureEngine() {
         engine.onDetect = ::handlePeerDetectLocked
         engine.onEaData = { bytes -> handleEaData(bytes) }
         engine.onSynchronizationEchoSent = { pendingEchoFlush = true }
         engine.onFileTransferData = { nowPlaying.file(it) }
         engine.onOptionalPacketStalled = { nowPlaying.transportFailure() }
+    }
+
+    init {
+        configureEngine()
         if (tickAutomatically) {
             Thread(
                 {
@@ -184,11 +198,7 @@ class VirtualIap2Link(
                         } catch (_: InterruptedException) {
                             return@Thread
                         }
-                        synchronized(lock) {
-                            engine.advanceTime(nowMillis())
-                            nowPlaying.tick()
-                            drainLocked()
-                        }
+                        tick()
                     }
                 },
                 "iap-link-pacer",
@@ -196,6 +206,62 @@ class VirtualIap2Link(
                 isDaemon = true
                 start()
             }
+        }
+    }
+
+    private fun sendCurrentControl(bytes: ByteArray) {
+        val revision = roundRevision
+        val guarded = sendControlForRound
+        if (guarded == null) sendControlIap(bytes) else guarded(bytes) { roundRevision == revision && alive() }
+    }
+
+    /** One bounded recovery attempt per cooldown; a new peer SYN is required before CSM delivery. */
+    internal fun tick() {
+        synchronized(lock) {
+            if (!alive()) return
+            val time = nowMillis()
+            if (recoveryAt?.let { time >= it } == true && recoveryAttempts < 2 && tunnelWriter() == null) {
+                recoveryAt = null
+                recoveryAttempts++
+                lastRecoveryAt = time
+                engine = Iap2LinkEngine()
+                configureEngine()
+                parser = Iap2Csm.Parser()
+                nowPlaying.resetForLink()
+                tunnelCsmStarted = false
+                tunnelIdentified = false
+                tunnelEchoDelivered = false
+                pendingEchoFlush = false
+                mib3SynAckQueued = false
+                mib3CsmStarted = false
+                mib3Identified = false
+                mib3AuthStage = 0
+                mib3ControlSessionNotified = false
+                initializationSent = false
+                eventCsmStarted = false
+                controlSynRounds = 0
+                controlSynGaveUp = false
+                mib3MarkerIgnores = 0
+                mfiIdentity = null
+                mfiOrder = emptyList()
+                mfiPosition = -1
+                mfiCurrentLength = 0
+                mfiFinished = false
+                mfiEcdsa = false
+                authenticationNotified = false
+                hidDescriptor = null
+                hidKeyEdge.reset()
+                if (voicePressed) onVoiceKey?.invoke(false)
+                voicePressed = false
+                vehicleDataStatus.sends = emptySet()
+                vehicleDataStatus.receives = emptySet()
+                engine.enterNegotiating()
+                sendCurrentControl(Iap2LinkEngine.MARKER)
+                log("IAPLINK: recovery attempt=$recoveryAttempts; waiting for peer synchronization; video/audio retained")
+            }
+            engine.advanceTime(time)
+            nowPlaying.tick()
+            drainLocked()
         }
     }
 
@@ -223,7 +289,7 @@ class VirtualIap2Link(
             begin()
             if (mib3Armed) return
             mib3Armed = true
-            sendControlIap(Iap2LinkEngine.MARKER)
+            sendCurrentControl(Iap2LinkEngine.MARKER)
             log("IAPLINK: MIB3 detect 已发（控制通道 iAPSendMessage，代际=$generation）——等待车机")
         }
     }
@@ -254,7 +320,7 @@ class VirtualIap2Link(
     }
 
     /**
-     * MIB3 控制会话完成回调（auth+burst 发出时触发一次）：宿主应在此之后按
+     * MIB3 控制会话完成回调（初始化后收到对端订阅时触发一次）：宿主应在此之后按
      * AADisplay r17 验证过的时序重申 modesChanged 资源声明（+1.5s 首发、
      * +4/+12/+30s 重申）。**082446 定谳**：协商/MFi/订阅全部成功但只在会话
      * 建立早期声明过一次资源 → 车机全程健康却永不切到 CarPlay 画面——第二控制
@@ -263,6 +329,8 @@ class VirtualIap2Link(
      * AADisplay 注释原话），必须等 burst 完成。
      */
     var onControlSessionComplete: (() -> Unit)? = null
+
+    var onControlSessionReset: (() -> Unit)? = null
 
     /** 网络 iAP 已收到本轮挑战应答并发送 AA05；不包含 MIB3 专属的资源突发。 */
     var onAuthenticationComplete: (() -> Unit)? = null
@@ -339,8 +407,8 @@ class VirtualIap2Link(
         val tunnel = tunnelWriter()
         when {
             tunnel != null -> tunnel.writeIapBytes(bytes)
-            eventLinkArmed -> sendControlIap(bytes)
-            mib3Armed -> sendControlIap(bytes)
+            eventLinkArmed -> sendCurrentControl(bytes)
+            mib3Armed -> sendCurrentControl(bytes)
             else -> sendEventIap(bytes)
         }
     }
@@ -367,7 +435,7 @@ class VirtualIap2Link(
 
             eventLinkArmed -> {
                 // 入站事件通道 / 出站控制通道：应答、同步包、CSM 一律写控制通道
-                sendControlIap(out)
+                sendCurrentControl(out)
                 if (pendingEchoFlush) {
                     pendingEchoFlush = false
                     log("IAPLINK: ✓ SYN|ACK 已投递控制通道——链路协商完成，启动控制会话")
@@ -375,7 +443,7 @@ class VirtualIap2Link(
             }
 
             mib3Armed -> {
-                sendControlIap(out)
+                sendCurrentControl(out)
                 if (pendingEchoFlush) {
                     pendingEchoFlush = false
                     mib3SynAckQueued = true
@@ -399,6 +467,18 @@ class VirtualIap2Link(
 
                 is Iap2LinkEngine.Event.Dead -> {
                     log("IAPLINK: 虚拟链路终止 - ${event.reason ?: "EOF"}")
+                    roundRevision++
+                    authenticationNotified = false
+                    mib3ControlSessionNotified = false
+                    mfiCurrentLength = 0
+                    mfiFinished = true
+                    mib3AuthStage = 0
+                    initializationSent = false
+                    nowPlaying.resetForLink()
+                    onControlSessionReset?.invoke()
+                    val next = maxOf(nowMillis() + 5_000, lastRecoveryAt?.plus(30_000) ?: 0L)
+                    if (recoveryAttempts < 2 && tunnelWriter() == null) recoveryAt = next
+                    noteLinkStateLocked()
                     return
                 }
             }
@@ -421,6 +501,7 @@ class VirtualIap2Link(
 
     /** MFi 挑战静默超时：记入该车机的记忆并换下一档重试（节拍线程每 200ms 驱动一次）。 */
     private fun checkMfiTimeoutLocked() {
+        if (engine.state != Iap2LinkEngine.State.NORMAL) return
         val identity = mfiIdentity ?: return
         if (mfiFinished || mfiCurrentLength == 0) return
         if (nowMillis() - mfiChallengeSentAtMs < mfiWindowMillis) return
@@ -432,12 +513,9 @@ class VirtualIap2Link(
         startNextMfiChallengeLocked()
     }
 
-    /**
-     * 下一档 MFi 挑战（按车机记忆重排，默认 20B 优先，EC 公钥提示时 32B 优先）。
-     * 全部档位无应答时与蓝牙路径同语义：跳过校验直接 0xAA05，由车机后续行为判定。
-     */
     private var mfiEcdsa = false
 
+    /** 按车型记忆/公钥提示选择挑战长度；已核对奔驰不将静默视为认证完成。 */
     private fun startNextMfiChallengeLocked() {
         val identity = mfiIdentity ?: return
         if (mfiOrder.isEmpty()) {
@@ -459,7 +537,14 @@ class VirtualIap2Link(
         }
         mfiPosition += 1
         if (mfiPosition >= mfiOrder.size) {
-            log("IAPLINK: 隧道 MFi 挑战全部无应答——跳过校验直接 0xaa05（由车机后续行为判定）")
+            if (requireChallengeResponse) {
+                mfiFinished = true
+                mfiCurrentLength = 0
+                mib3AuthStage = 0
+                log("IAPLINK: authentication incomplete; no challenge response, no AA05 or completion inferred")
+                return
+            }
+            log("IAPLINK: 隧道 MFi 挑战全部无应答——兼容初始化；不视为已验证认证")
             mfiFinished = true
             mib3AuthStage = 4
             sendCsmLocked(Iap2MessageIds.MFI_AUTHENTICATION_SUCCEEDED)
@@ -522,7 +607,7 @@ class VirtualIap2Link(
         body: ByteArray = ByteArray(0),
     ) {
         val frame = Iap2Csm.encode(messageId, body)
-        val ok = engine.sendControl(frame, System.nanoTime() / 1_000_000L)
+        val ok = engine.sendControl(frame, nowMillis())
         log(
             "IAPLINK: 隧道 tx 0x${messageId.toString(16)} " +
                 "(${Iap2MessageIds.nameOf(messageId)}) ${frame.size}B ok=$ok",
@@ -531,7 +616,7 @@ class VirtualIap2Link(
 
     /** 直接投递完整 CSM 帧（Frida 抓的逐字节常量，勿重新编码）。 */
     private fun sendRawCsmLocked(frame: ByteArray) {
-        val ok = engine.sendControl(frame, System.nanoTime() / 1_000_000L)
+        val ok = engine.sendControl(frame, nowMillis())
         // CSM 帧布局：FF 5A [len:2] [msgId:2] …——消息号在 [4..5]，[2..3] 是载荷长度。
         // 曾误取 [2..3]，日志把 0xFFFA 打成 0x32、0xFFF0 打成 0x0E、0x4158 打成 0x64
         // （长度值），排查时极易被带偏（2026-10-23 实际误导过一轮）。
@@ -556,6 +641,18 @@ class VirtualIap2Link(
         val mib3 = (mib3Armed || eventLinkArmed) && !onTunnel
         if (!onTunnel && !mib3) return
         val ids = Iap2MessageIds
+        if (engine.state != Iap2LinkEngine.State.NORMAL) return
+        val subscription = frame.messageId in setOf(0x5000, START_COMMUNICATIONS_UPDATES, START_CALL_STATE_UPDATES, START_LIST_UPDATES)
+        if (subscription &&
+            initializationSent &&
+            (!requireChallengeResponse || authenticationNotified) &&
+            !mib3ControlSessionNotified
+        ) {
+            mib3ControlSessionNotified = true
+            onControlSessionComplete?.invoke()
+            log("IAPLINK: control session confirmed by peer subscription")
+        }
+        if (frame.messageId in 0x5000..0x5003 && requireChallengeResponse && !authenticationNotified) return
         if (nowPlaying.control(frame)) return
         when (frame.messageId) {
             ids.IDENTIFICATION_INFORMATION -> {
@@ -638,7 +735,9 @@ class VirtualIap2Link(
             }
 
             ids.MFI_RESPONSE -> {
-                val challenged = mib3AuthStage == 3
+                val response = Iap2Csm.parseParams(frame.body).firstOrNull { it.id == 0 }?.value
+                val challenged = mib3AuthStage == 3 && response != null && response.isNotEmpty()
+                if (!challenged) return
                 if (mib3) {
                     mfiIdentity?.let { MfiLengthMemory.recordSuccess(mfiContext, it, mfiCurrentLength) }
                     log("IAPLINK: 隧道 rx=0xaa03 签名 ${frame.body.size}B（${mfiCurrentLength}B 挑战成功，已记忆）")
@@ -799,25 +898,24 @@ class VirtualIap2Link(
             }
         sendCsmLocked(
             WIRELESS_SESSION_ID,
-            Iap2Csm.param(0, sessionId.toByteArray(Charsets.UTF_8)),
+            Iap2Csm.string(0, sessionId),
         )
-        sendCsmLocked(AUX_STATUS_NOTIFICATION, Iap2Csm.param(0x0006, ByteArray(0)))
+        if (!requireChallengeResponse) sendCsmLocked(AUX_STATUS_NOTIFICATION, Iap2Csm.param(0x0006, ByteArray(0)))
         sendCsmLocked(
             DEVICE_LANGUAGE,
-            Iap2Csm.param(0, "zh".toByteArray(Charsets.UTF_8)),
+            Iap2Csm.string(0, "zh"),
         )
         sendCsmLocked(DEVICE_TIME, mib3DeviceTimeParams())
         sendCsmLocked(
             DEVICE_INFORMATION_UPDATE,
-            Iap2Csm.param(0, "iPhone".toByteArray(Charsets.UTF_8)),
+            Iap2Csm.string(0, "iPhone"),
         )
-        sendRawCsmLocked(MIB3_START_LOCATION_INFORMATION)
-        sendRawCsmLocked(MIB3_GPRMC_DATA_STATUS)
-        log("IAPLINK: MIB3 突发已发（会话标识 $sessionId）——等待车机订阅")
-        if (!mib3ControlSessionNotified) {
-            mib3ControlSessionNotified = true
-            onControlSessionComplete?.invoke()
+        if (!requireChallengeResponse) {
+            sendRawCsmLocked(MIB3_START_LOCATION_INFORMATION)
+            sendRawCsmLocked(MIB3_GPRMC_DATA_STATUS)
         }
+        log("IAPLINK: MIB3 突发已发（会话标识 $sessionId）——等待车机订阅")
+        initializationSent = true
     }
 
     /** 0x4E0B：u64 秒 + s16 时区偏移(分) + u8 夏令时。 */

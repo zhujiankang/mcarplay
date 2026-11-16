@@ -9,6 +9,87 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NowPlayingLinkTest {
+    @Test fun phoneArtworkUsesHighIdentifiersAndExhaustionLeavesTextUpdatesAvailable() {
+        val h = Harness()
+        h.image()
+        h.subscribe()
+        assertEquals(128, h.files.first()[0].toInt() and 255)
+        repeat(127) { i ->
+            h.time += 1000
+            h.image(10, "cover-$i")
+            h.link.tick()
+        }
+        val ids = h.files.filter { it[1].toInt() == 4 }.map { it[0].toInt() and 255 }
+        assertEquals((128..254).toList(), ids)
+        assertEquals(
+            0,
+            fields(h.controls.last(), 0)
+                .getValue(26)
+                .value
+                .single()
+                .toInt(),
+        )
+        assertTrue(h.controls.size >= 128)
+    }
+
+    @Test fun subscriptionFieldSelectionDoesNotTransferUnrequestedArtworkAndSeekIsNotAdvertised() {
+        val h = Harness()
+        h.image()
+        h.link.control(
+            Iap2Csm.Frame(
+                0x5000,
+                Iap2Csm.param(0, Iap2Csm.param(1, ByteArray(0))) +
+                    Iap2Csm.param(1, Iap2Csm.param(13, ByteArray(0))),
+            ),
+        )
+        assertEquals(setOf(1), fields(h.controls.single(), 0).keys)
+        assertEquals(setOf(13), fields(h.controls.single(), 1).keys)
+        assertEquals(
+            0,
+            fields(h.controls.single(), 1)
+                .getValue(13)
+                .value
+                .single()
+                .toInt(),
+        )
+        assertTrue(h.files.isEmpty())
+        h.link.control(Iap2Csm.Frame(0x5003, Iap2Csm.u32(0, 12345)))
+        assertTrue(h.logs.any { it.contains("seekRequestUnsupported") })
+        assertTrue(h.logs.none { it.contains("artworkAttributes") })
+    }
+
+    @Test fun newLinkRequiresFreshSubscriptionAndIgnoresOldFileReplies() {
+        val h = Harness()
+        h.image()
+        h.subscribe()
+        val count = h.files.size
+        h.link.resetForLink()
+        h.response(128, 1)
+        h.link.tick()
+        assertEquals(count, h.files.size)
+        h.subscribe()
+        assertEquals(count + 1, h.files.size)
+        assertEquals(4, h.files.last()[1].toInt())
+    }
+
+    @Test fun malformedAndDuplicateSubscriptionsCannotEnableArtworkAndPlaybackOnlyDoesNotRequestItemFields() {
+        val h = Harness()
+        h.image()
+        for (body in listOf(
+            byteArrayOf(0, 9, 0),
+            Iap2Csm.param(0, byteArrayOf(1)),
+            Iap2Csm.param(0, ByteArray(0)) + Iap2Csm.param(0, ByteArray(0)),
+        )) {
+            h.link.control(Iap2Csm.Frame(0x5000, body))
+        }
+        assertTrue(h.controls.isEmpty())
+        assertTrue(h.files.isEmpty())
+        h.link.control(Iap2Csm.Frame(0x5000, Iap2Csm.param(1, Iap2Csm.param(0, ByteArray(0)))))
+        assertTrue(fields(h.controls.single(), 0).isEmpty())
+        assertEquals(setOf(0), fields(h.controls.single(), 1).keys)
+        assertTrue(h.files.isEmpty())
+    }
+
     @Test fun multibyteAndControlCharactersFitTheNegotiatedControlPacket() {
         val data =
             CarMediaSnapshot(

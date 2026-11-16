@@ -7,6 +7,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CarLifeVideoRequestTest {
+    @Test fun receiverFpsCapIsAppliedBeforeInitAndCannotMutateARunningSource() {
+        val request = CarLifeVideoRequest(null, true, 60)
+        assertEquals(60, request.requestedFps)
+        assertTrue(request.update(1624, 1150, 30))
+        request.takeInitialSize(true)
+        assertEquals(30, request.requestedFps)
+        assertFalse(request.update(1624, 1150, 60))
+        assertEquals(30, request.requestedFps)
+    }
+
     @Test
     fun huInfoCarriesTheDisplayDomainBeforeVideoInit() {
         val request = CarLifeVideoRequest(null, true)
