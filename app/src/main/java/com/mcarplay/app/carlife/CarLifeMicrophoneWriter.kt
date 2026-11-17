@@ -15,7 +15,58 @@ internal class CarLifeMicrophoneWriter(
         val generation: Long,
         val timestamp: Int,
         val pcm: ByteArray,
+        val recording: Recording,
     )
+
+    private class Recording(
+        val generation: Long,
+    ) {
+        val queued =
+            java.util.concurrent.atomic
+                .AtomicLong()
+        val written =
+            java.util.concurrent.atomic
+                .AtomicLong()
+        val bytes =
+            java.util.concurrent.atomic
+                .AtomicLong()
+        val dropped =
+            java.util.concurrent.atomic
+                .AtomicLong()
+        val discarded =
+            java.util.concurrent.atomic
+                .AtomicLong()
+        val failed =
+            java.util.concurrent.atomic
+                .AtomicLong()
+        val inFlight =
+            java.util.concurrent.atomic
+                .AtomicInteger()
+        val ended =
+            java.util.concurrent.atomic
+                .AtomicBoolean()
+        val firstWriteMs =
+            java.util.concurrent.atomic
+                .AtomicLong(-1)
+        val lastWriteMs =
+            java.util.concurrent.atomic
+                .AtomicLong(-1)
+        private val started = System.nanoTime()
+
+        fun wrote(size: Int): Long {
+            val elapsed = (System.nanoTime() - started) / 1_000_000
+            firstWriteMs.compareAndSet(-1, elapsed)
+            lastWriteMs.set(elapsed)
+            bytes.addAndGet(size.toLong())
+            return written.incrementAndGet()
+        }
+
+        fun summary(phase: String) =
+            "MIC: carlifeRecording generation=$generation phase=$phase queued=${queued.get()} written=${written.get()} " +
+                "bytes=${bytes.get()} dropped=${dropped.get()} discarded=${discarded.get()} " +
+                "failed=${failed.get()} inFlight=${inFlight.get()} " +
+                "firstWriteMs=${firstWriteMs.get()} lastWriteMs=${lastWriteMs.get()}"
+    }
 
     private val queue = ArrayBlockingQueue<Chunk>(8)
     private var generation = 0L
@@ -23,8 +74,7 @@ internal class CarLifeMicrophoneWriter(
     private var pending = ByteArray(640)
     private var filled = 0
     private var timestamp = 0
-    private var sent = 0L
-    private var dropped = 0L
+    private var recording: Recording? = null
 
     @Volatile private var closed = false
     private var worker: Thread? = null
@@ -34,6 +84,7 @@ internal class CarLifeMicrophoneWriter(
         if (closed) return
         end()
         active = true
+        recording = Recording(generation)
         timestamp = 0
         if (worker != null) return
         worker =
@@ -45,24 +96,47 @@ internal class CarLifeMicrophoneWriter(
                         } catch (_: InterruptedException) {
                             break
                         } ?: continue
-                    if (!valid(chunk.generation)) continue
-                    val target = socket() ?: continue
-                    val encryption = cipher() ?: continue
+                    val stats = chunk.recording
+                    stats.inFlight.incrementAndGet()
                     try {
+                        if (!valid(chunk.generation)) {
+                            stats.discarded.incrementAndGet()
+                            continue
+                        }
+                        val target = socket()
+                        val encryption = cipher()
+                        if (target == null || encryption == null) {
+                            stats.discarded.incrementAndGet()
+                            continue
+                        }
                         val body = encryption.encrypt(chunk.pcm)
                         synchronized(target) {
                             if (valid(chunk.generation)) {
                                 target.getOutputStream().write(CarLifeProtocol.encodeVideo(MIC_DATA, chunk.timestamp, body))
                                 target.getOutputStream().flush()
-                                sent++
-                                if (sent == 1L || sent % 250L == 0L) summary()
+                                val count = stats.wrote(chunk.pcm.size)
+                                if (count == 1L || count % 250L == 0L) {
+                                    log("MIC: carlifeWritten=$count dropped=${stats.dropped.get()} kind=0x58001 rate=16000 channels=1")
+                                }
+                            } else {
+                                stats.discarded.incrementAndGet()
                             }
                         }
                     } catch (_: Exception) {
-                        end()
-                        log("MIC: CarLife write failed; voice input stopped")
+                        stats.failed.incrementAndGet()
+                        val stopped =
+                            synchronized(this@CarLifeMicrophoneWriter) {
+                                if (generation == chunk.generation) {
+                                    end()
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                        log("MIC: CarLife write failed generation=${chunk.generation} stoppedMatchingRecording=$stopped")
                     } finally {
                         chunk.pcm.fill(0)
+                        if (stats.inFlight.decrementAndGet() == 0 && stats.ended.get()) log(stats.summary("drained"))
                     }
                 }
             }
@@ -78,10 +152,13 @@ internal class CarLifeMicrophoneWriter(
             offset += size
             filled += size
             if (filled == pending.size) {
-                val chunk = Chunk(generation, timestamp, pending)
+                val stats = recording ?: return false
+                val chunk = Chunk(generation, timestamp, pending, stats)
                 if (!queue.offer(chunk)) {
                     chunk.pcm.fill(0)
-                    dropped++
+                    stats.dropped.incrementAndGet()
+                } else {
+                    stats.queued.incrementAndGet()
                 }
                 pending = ByteArray(640)
                 filled = 0
@@ -96,22 +173,27 @@ internal class CarLifeMicrophoneWriter(
 
     @Synchronized
     fun end() {
+        val previous = recording
+        recording = null
         active = false
         generation++
         while (true) {
-            (queue.poll() ?: break).pcm.fill(0)
+            val chunk = queue.poll() ?: break
+            chunk.recording.discarded.incrementAndGet()
+            chunk.pcm.fill(0)
         }
         pending.fill(0)
         filled = 0
+        previous?.let {
+            it.ended.set(true)
+            log(it.summary("ended"))
+        }
     }
-
-    private fun summary() = log("MIC: carlifeWritten=$sent dropped=$dropped kind=0x58001 rate=16000 channels=1")
 
     override fun close() {
         end()
         closed = true
         worker?.interrupt()
-        summary()
     }
 
     companion object {

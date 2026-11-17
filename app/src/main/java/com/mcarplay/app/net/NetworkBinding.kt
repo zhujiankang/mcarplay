@@ -23,6 +23,33 @@ internal class NetworkBinding<N : Any, R : Any>(
     @Synchronized
     fun isCurrent(owner: R): Boolean = request === owner
 
+    @Synchronized fun owner(): R? = request
+
+    data class Adoption<R>(
+        val previous: R?,
+    )
+
+    /** Rebind a verified replacement without first unbinding, and only if the original owner is still current. */
+    @Synchronized fun adopt(
+        expected: R?,
+        next: R,
+        candidate: N,
+    ): Adoption<R>? {
+        if (request !== expected || !bindProcess(candidate)) return null
+        val previous = request
+        request = next
+        network = candidate
+        invalidated = null
+        return Adoption(previous)
+    }
+
+    @Synchronized
+    fun retire(owner: R): Boolean {
+        if (request !== owner) return false
+        replaceRequest(null)
+        return true
+    }
+
     @Synchronized
     fun bind(
         owner: R,

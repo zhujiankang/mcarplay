@@ -9,6 +9,79 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NetworkBindingTest {
+    @Test fun adoptionKeepsBindingUntilVerifiedReplacementAndReturnsOldOwner() {
+        val e = Environment()
+        val old = Any()
+        val fresh = Any()
+        val first = e.liveNetwork(200)
+        val next = e.liveNetwork(201)
+        e.binding.replaceRequest(old)
+        assertTrue(e.binding.bind(old, first))
+        assertSame(old, e.binding.adopt(old, fresh, next)?.previous)
+        assertSame(fresh, e.binding.owner())
+        assertSame(next, e.binding.current())
+        assertEquals(listOf(first, next), e.bindings)
+        assertFalse(e.binding.lost(old, next))
+    }
+
+    @Test fun staleRecoveryCannotReplaceNewerOwner() {
+        val e = Environment()
+        val old = Any()
+        val fresh = Any()
+        val network = e.liveNetwork(200)
+        e.binding.replaceRequest(fresh)
+        assertTrue(e.binding.bind(fresh, network))
+        assertNull(e.binding.adopt(old, Any(), e.liveNetwork(201)))
+        assertSame(fresh, e.binding.owner())
+        assertSame(network, e.binding.current())
+        assertEquals(listOf(network), e.bindings)
+    }
+
+    @Test fun failedAdoptionPreservesOwnerAndNetwork() {
+        val e = Environment()
+        val old = Any()
+        val network = e.liveNetwork(200)
+        e.binding.replaceRequest(old)
+        assertTrue(e.binding.bind(old, network))
+        e.allowBinding = false
+        assertNull(e.binding.adopt(old, Any(), e.liveNetwork(201)))
+        assertSame(old, e.binding.owner())
+        assertSame(network, e.binding.current())
+        assertEquals(listOf(network), e.bindings)
+    }
+
+    @Test fun ownerlessAdoptionCannotOverrideNewRequest() {
+        val e = Environment()
+        val owner = Any()
+        val network = e.liveNetwork(200)
+        assertNull(e.binding.adopt(null, owner, network)?.previous)
+        assertSame(owner, e.binding.owner())
+        assertNull(e.binding.adopt(null, Any(), e.liveNetwork(201)))
+        assertSame(network, e.binding.current())
+    }
+
+    @Test fun scopedRetirementCannotReleaseNewerNetworkRequest() {
+        val e = Environment()
+        val old = Any()
+        val fresh = Any()
+        val network = e.liveNetwork(200)
+        e.binding.replaceRequest(old)
+        e.binding.replaceRequest(fresh)
+        assertTrue(e.binding.bind(fresh, network))
+        assertFalse(e.binding.retire(old))
+        assertSame(network, e.binding.current())
+    }
+
+    @Test fun scopedRetirementUnbindsOnlyItsOwnRequest() {
+        val e = Environment()
+        val owner = Any()
+        e.binding.replaceRequest(owner)
+        assertTrue(e.binding.bind(owner, e.liveNetwork(200)))
+        assertTrue(e.binding.retire(owner))
+        assertNull(e.binding.current())
+        assertFalse(e.binding.retire(owner))
+    }
+
     @Test
     fun lossWithRecreatedNetworkValueClearsProcessBinding() {
         val environment = Environment()

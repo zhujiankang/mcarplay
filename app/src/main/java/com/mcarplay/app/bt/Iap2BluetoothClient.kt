@@ -430,13 +430,7 @@ class Iap2BluetoothClient(
                     diagnosticEpoch,
                     targetProvider,
                     onAdapterStateChanged = onAdapterStateChanged,
-                    onBondStateChanged = { address, state ->
-                        inboundWait.bondChanged(address, state == BluetoothDevice.BOND_BONDED)
-                        iap2ServiceCache.remove(address)
-                        targetServicesReported.remove(address)
-                        skippedNoService.remove(address)
-                        profileOnlineCache.remove(address)
-                    },
+                    onBondStateChanged = { address, state -> inboundWait.bondChanged(address, state == BluetoothDevice.BOND_BONDED) },
                 ) {
                     running && generation.get() == myGeneration
                 }.also { it.start() },
@@ -504,9 +498,10 @@ class Iap2BluetoothClient(
                 probePaused = false
                 log("BT-C: 恢复主动探测")
             }
-            var connected: OutboundConnection? = null
+            var connected: BluetoothSocket? = null
             for (device in candidates) {
                 if (!running || generation.get() != myGeneration) return
+                // Preserve the tested 0.1.14 in-flight transport. Only suppress NEW probes after a car has connected.
                 if (BtSessionGate.inboundActive || BtSessionGate.sessionActive) break
                 val selected = targetProvider()
                 if (selected != null && !TargetDevicePrefs.matches(selected, device.address)) continue
@@ -563,8 +558,8 @@ class Iap2BluetoothClient(
                 // SDP 等待期间用户可能已停止或重启；旧轮不能再创建一个无法被 stop() 关闭的新 socket。
                 if (!running || generation.get() != myGeneration) return
                 if (BtSessionGate.inboundActive || BtSessionGate.sessionActive) break
-                val currentTarget = targetProvider()
-                if (currentTarget != null && !TargetDevicePrefs.matches(currentTarget, device.address)) continue
+                val selectedAfterSdp = targetProvider()
+                if (selectedAfterSdp != null && !TargetDevicePrefs.matches(selectedAfterSdp, device.address)) continue
                 // SDP 查询期间可能进入重新配对；此时不发 RFCOMM，也不干预音频配置文件。
                 if (runCatching { device.bondState }.getOrNull() != BluetoothDevice.BOND_BONDED) {
                     inboundWait.connected(device.address)
@@ -618,15 +613,11 @@ class Iap2BluetoothClient(
             }
             if (generation.get() != myGeneration) {
                 // stop() 与 connect() 成功竞争：本线程已过期，不建会话
-                currentSocket.compareAndSet(connected.socket, null)
-                connected.close()
+                currentSocket.compareAndSet(connected, null)
+                runCatching { connected.close() }
                 return
             }
-            try {
-                if (connected.lease.isCurrent) runSession(connected.socket)
-            } finally {
-                connected.close()
-            }
+            runSession(connected)
             sleepQuietly(RETRY_DELAY_MILLIS)
         }
         log("BT-C: 客户端已停止")
@@ -679,7 +670,7 @@ class Iap2BluetoothClient(
         name: String,
         myGeneration: Long,
         diagnosticEpoch: Long,
-    ): OutboundConnection? {
+    ): BluetoothSocket? {
         // 再检查一次：上层 SDP 后的检查与创建 socket 之间也可能收到 BONDING。
         if (runCatching { device.bondState }.getOrNull() != BluetoothDevice.BOND_BONDED) {
             inboundWait.connected(device.address)
@@ -722,52 +713,30 @@ class Iap2BluetoothClient(
         // 连接前就登记：connect() 是阻塞调用（SDP 查询 + 建链最长可达数十秒），
         // stop() 只有能拿到 socket 引用才能 close() 打断它，否则线程会滞留。
         currentSocket.set(socket)
-        val lease = BtSessionGate.connections.beginOutbound { socket.close() }
-        if (lease == null || !running || generation.get() != myGeneration || BtSessionGate.sessionActive) {
+        if (!running || generation.get() != myGeneration) {
             currentSocket.compareAndSet(socket, null)
             runCatching { socket.close() }
-            lease?.close()
             diagnostics.connectFinished(trace, cancelled = true)
             return null
         }
         val connectStartedAt = SystemClock.elapsedRealtime()
         return try {
             socket.connect()
-            if (!running || generation.get() != myGeneration || BtSessionGate.sessionActive || !lease.connected()) {
-                currentSocket.compareAndSet(socket, null)
-                lease.close()
-                runCatching { socket.close() }
-                diagnostics.connectFinished(trace, cancelled = true)
-                return null
-            }
-            diagnostics.connectFinished(trace)
+            diagnostics.connectFinished(trace, cancelled = !running || generation.get() != myGeneration)
             inboundWait.connected(device.address)
-            OutboundConnection(socket, lease)
+            socket
         } catch (error: IOException) {
             currentSocket.compareAndSet(socket, null)
             runCatching { socket.close() }
-            val cancelled = !running || generation.get() != myGeneration || !lease.isCurrent
-            lease.close()
+            val cancelled = !running || generation.get() != myGeneration
             diagnostics.connectFinished(trace, error = error, cancelled = cancelled)
             if (!cancelled) noteConnectFailure(device, name, error, SystemClock.elapsedRealtime() - connectStartedAt)
             null
         } catch (error: SecurityException) {
             currentSocket.compareAndSet(socket, null)
             runCatching { socket.close() }
-            val cancelled = !running || generation.get() != myGeneration || !lease.isCurrent
-            lease.close()
-            diagnostics.connectFinished(trace, error = error, cancelled = cancelled)
+            diagnostics.connectFinished(trace, error = error, cancelled = !running || generation.get() != myGeneration)
             null
-        }
-    }
-
-    private class OutboundConnection(
-        val socket: BluetoothSocket,
-        val lease: BluetoothConnectionGate.Lease,
-    ) : AutoCloseable {
-        override fun close() {
-            lease.close()
-            runCatching { socket.close() }
         }
     }
 
@@ -873,8 +842,8 @@ class Iap2BluetoothClient(
  */
 object BtSessionGate {
     /** 入站（车机主动连入）的 iAP2 会话活跃：出站暂停，避免两条 RFCOMM 互相踩。 */
-    internal val connections = BluetoothConnectionGate()
-    val inboundActive: Boolean get() = connections.inboundActive
+    @Volatile
+    var inboundActive: Boolean = false
 
     /**
      * CarPlay 会话已建立（任一路径成功拿到端点后置位，由 SessionController 维护）：

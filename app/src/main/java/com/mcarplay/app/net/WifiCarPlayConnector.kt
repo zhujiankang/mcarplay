@@ -68,6 +68,10 @@ class WifiCarPlayConnector(
         )
 
     val currentNetwork: Network? get() = binding.current()
+    private val recoveryLeaseLock = Any()
+    private val retainedRequests = mutableSetOf<ConnectivityManager.NetworkCallback>()
+    private val recoveryObservers = mutableSetOf<ConnectivityManager.NetworkCallback>()
+    private val verifiedWifi = AtomicReference<Pair<String, Network>?>(null)
 
     /**
      * 应用专属网络被系统断开（热点关闭/离开范围）时回调。会话层据此提示用户；
@@ -304,6 +308,7 @@ class WifiCarPlayConnector(
                         return
                     }
                     result.set(network)
+                    verifiedWifi.set(ssid to network)
                     log("WiFi: 已加入应用专属网络 \"$ssid\"（$network bindProcessToNetwork=true）——不影响其它应用联网")
                     latch.countDown()
                 }
@@ -470,6 +475,7 @@ class WifiCarPlayConnector(
                         if (!WifiIdentity.matches(expectedSsid, actual)) return
                     }
                     val bound = binding.bind(this, network)
+                    if (bound && expectedSsid != null) verifiedWifi.set(expectedSsid to network)
                     log(
                         "WiFi: 已绑定现有WiFi网络 $network " +
                             "ssid=${expectedSsid ?: "unknown"} bindProcessToNetwork=$bound",
@@ -502,9 +508,92 @@ class WifiCarPlayConnector(
     }
 
     fun release() {
-        binding.replaceRequest(null)?.let {
-            runCatching { connectivityManager.unregisterNetworkCallback(it) }
+        val callbacks =
+            synchronized(recoveryLeaseLock) {
+                val owners = (retainedRequests + recoveryObservers + listOfNotNull(binding.replaceRequest(null))).toSet()
+                retainedRequests.clear()
+                recoveryObservers.clear()
+                verifiedWifi.set(null)
+                owners
+            }
+        callbacks.forEach { runCatching { connectivityManager.unregisterNetworkCallback(it) } }
+    }
+
+    /** Observe and rebind an already connected matching Wi-Fi without requesting a network switch or user dialog. */
+    @WorkerThread
+    internal fun recoverExistingWifi(
+        expectedSsid: String,
+        current: () -> Boolean,
+        timeoutMillis: Long = 3000,
+    ): Network? {
+        if (!current()) return null
+        val latch = CountDownLatch(1)
+        val result = AtomicReference<Network?>(null)
+        val expectedOwner = binding.owner()
+        val observer =
+            object : ConnectivityManager.NetworkCallback(ConnectivityManager.NetworkCallback.FLAG_INCLUDE_LOCATION_INFO) {
+                override fun onAvailable(network: Network) {
+                    tryBind(network, connectivityManager.getNetworkCapabilities(network))
+                }
+
+                override fun onCapabilitiesChanged(
+                    network: Network,
+                    capabilities: NetworkCapabilities,
+                ) {
+                    tryBind(network, capabilities)
+                }
+
+                private fun tryBind(
+                    network: Network,
+                    capabilities: NetworkCapabilities?,
+                ) {
+                    if (!current() || result.get() != null) return
+                    val actual = WifiIdentity.normalizeSsid((capabilities?.transportInfo as? WifiInfo)?.ssid)
+                    val anchor = verifiedWifi.get()
+                    if (actual != null) {
+                        if (!WifiIdentity.matches(expectedSsid, actual)) return
+                    } else if (anchor?.first != expectedSsid || anchor.second != network) {
+                        return
+                    }
+                    var obsolete: ConnectivityManager.NetworkCallback? = null
+                    val adopted =
+                        synchronized(recoveryLeaseLock) {
+                            if (!current()) return@synchronized false
+                            val adoption = binding.adopt(expectedOwner, this, network) ?: return@synchronized false
+                            adoption.previous?.let {
+                                if (recoveryObservers.remove(it)) obsolete = it else retainedRequests.add(it)
+                            }
+                            recoveryObservers.add(this)
+                            verifiedWifi.set(expectedSsid to network)
+                            result.set(network)
+                            true
+                        }
+                    obsolete?.let { runCatching { connectivityManager.unregisterNetworkCallback(it) } }
+                    if (adopted) {
+                        latch.countDown()
+                    }
+                }
+
+                override fun onLost(network: Network) {
+                    if (binding.lost(this, network)) onNetworkLost?.invoke(expectedSsid)
+                }
+            }
+        try {
+            val request = NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build()
+            connectivityManager.registerNetworkCallback(request, observer)
+            latch.await(timeoutMillis, TimeUnit.MILLISECONDS)
+            val network = result.get()
+            if (current() && network != null && binding.current() == network) return network
+            log("WIFI-RECOVERY: no matching visible car Wi-Fi; no blind bind or background network switch")
+        } catch (_: Exception) {
+            log("WIFI-RECOVERY: existing Wi-Fi observation unavailable")
         }
+        synchronized(recoveryLeaseLock) {
+            binding.retire(observer)
+            recoveryObservers.remove(observer)
+        }
+        runCatching { connectivityManager.unregisterNetworkCallback(observer) }
+        return null
     }
 
     companion object {

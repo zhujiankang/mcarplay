@@ -1,5 +1,13 @@
 # Connection Diagnostics
 
+## 0.1.23首次连接基线、网络恢复与录音写出
+
+`BT-FIRST: legacy14` 表示已启用恢复后的蓝牙接纳/公告生命周期，不表示奔驰已经识别。0.1.23 不再使用下述历史 0.1.21 的 BT-ARBITER 硬接纳策略，ACCEPTED_IAP2 后仍需查看 LINK-NEGOTIATION/BT_LINK 与认证、首帧。
+
+`WIFI-RECOVERY:` 记录匹配现有车机网络的被动重绑定、attempt=1..3、耗尽与恢复。`RESOURCE-SCREEN: defer return until car network is rebound` 表示禁止屏幕返回走未绑定默认网络；重绑定成功才重排请求。不会据此认定全部网络或 Home 故障已解决。
+
+`MIC: carlifeRecording generation=... phase=ended/drained` 按单次识别统计 queued/written/bytes/dropped/discarded/failed/inFlight 和首末写出毫秒。ended 时可能仍有一次在途 I/O，drained 提供结束后的完整计数；written 仅代表 socket 写入，不证明 CarWith 消费或 ASR 成功。stoppedMatchingRecording=false 表示迟到写错未停止新录音。日志不含 PCM 正文。详见 [0.1.23说明](MERCEDES-CARLIFE-0.1.23.md)。
+
 ## 0.1.21蓝牙连接仲裁与握手
 
 `BT-ARBITER:` 记录入站预留、取消未完成出站以及关闭重复连接。取消的出站计CANCELLED，不应推断车机拒绝并进入只等回连策略。`LINK-NEGOTIATION:` 的ready/rxBytes/detect/frames分别为链路就绪、收到的原始字节数、完整合法DETECT数和有效链路帧数；DETECT前3次记录阶段，关闭时汇总。rxBytes>0不等于收到同步帧，ready也不等于MFi/媒体成功。旧日志的wire payload omitted不足以反推报文字节。入站诊断的ACCEPTED_IAP2表示目标筛选通过，须继续检查BT-ARBITER是否接纳为当前传输。见 [0.1.21说明](MERCEDES-CARLIFE-0.1.21.md)。

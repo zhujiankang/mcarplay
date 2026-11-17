@@ -69,6 +69,7 @@ import com.mcarplay.app.media.AutoPlaySuppressor
 import com.mcarplay.app.media.MediaMetadataRelay
 import com.mcarplay.app.media.MediaSessionsState
 import com.mcarplay.app.net.AirPlayFeatures
+import com.mcarplay.app.net.BoundedNetworkRecovery
 import com.mcarplay.app.net.CarPlayCtrlAdvertiser
 import com.mcarplay.app.net.CarPlayServiceBrowser
 import com.mcarplay.app.net.CtrlInviteGate
@@ -425,6 +426,82 @@ object SessionController {
 
     /** WiFi 绑定互斥：auto-join 与端点交接两条路径可能同时绑定同一热点。 */
     private val wifiBindLock = Any()
+    private val wifiRecoveryLock = Any()
+    private val wifiRecoveryWorker by lazy {
+        java.util.concurrent.Executors
+            .newSingleThreadScheduledExecutor { Thread(it, "car-wifi-recovery").apply { isDaemon = true } }
+    }
+
+    private class WifiRecovery(
+        val client: AirPlayClient,
+        val epoch: Long,
+        val engine: BoundedNetworkRecovery<Network>,
+    )
+
+    private var wifiRecovery: WifiRecovery? = null
+    private var screenReturnAfterWifi: ScreenReturnAction? = null
+
+    private fun closeWifiRecovery() {
+        synchronized(wifiRecoveryLock) {
+            wifiRecovery?.engine?.close()
+            wifiRecovery = null
+        }
+        synchronized(modesActionLock) { screenReturnAfterWifi = null }
+    }
+
+    private fun requestWifiRecovery(
+        client: AirPlayClient,
+        explicit: Boolean = false,
+    ) {
+        val epoch = client.connectionGeneration
+        val ssid = knownCarHotspotSsid() ?: return
+        val connector = wifiConnector ?: return
+
+        fun current() = !connectCancelled && currentClient === client && client.isConnectionCurrent(epoch) && client.sessionActive
+        if (!current()) return
+        val engine =
+            synchronized(wifiRecoveryLock) {
+                wifiRecovery?.takeIf { it.client === client && it.epoch == epoch }?.engine ?: run {
+                    wifiRecovery?.engine?.close()
+                    BoundedNetworkRecovery(
+                        current = ::current,
+                        bound = { connector.currentNetwork?.takeIf { boundCarSsid == ssid } },
+                        attempt = {
+                            synchronized(wifiBindLock) {
+                                if (current()) {
+                                    connector.currentNetwork?.takeIf { boundCarSsid == ssid }
+                                        ?: connector.recoverExistingWifi(ssid, ::current)
+                                } else {
+                                    null
+                                }
+                            }
+                        },
+                        restored = { network ->
+                            if (current() && connector.currentNetwork == network) {
+                                boundCarSsid = ssid
+                                phaseHint = t(R.string.sc_bound_existing)
+                                ctrlAdvertiser?.ensureForNetwork(ssid, force = true, network = network)
+                                appendLog("WIFI-RECOVERY: existing car network rebound; control/media retained")
+                                val pending =
+                                    synchronized(modesActionLock) {
+                                        screenReturnAfterWifi?.also { screenReturnAfterWifi = null }
+                                    }
+                                if (pending?.client === client && pending.epoch == epoch) enqueueScreenReturn(client, pending.explicitUi)
+                            }
+                        },
+                        schedule = {
+                                delay,
+                                work,
+                            ->
+                            wifiRecoveryWorker.schedule({ work() }, delay, java.util.concurrent.TimeUnit.MILLISECONDS)
+                        },
+                        now = SystemClock::elapsedRealtime,
+                        log = ::appendLog,
+                    ).also { wifiRecovery = WifiRecovery(client, epoch, it) }
+                }
+            }
+        engine.request(explicit)
+    }
 
     private val endpointGeneration =
         java.util.concurrent.atomic
@@ -982,6 +1059,7 @@ object SessionController {
                         phaseHint = t(R.string.sc_hotspot_lost, ssid)
                         uiHintSink?.invoke(t(R.string.sc_hotspot_lost_hint, ssid))
                         appendLog(">>> 车机热点 \"$ssid\" 已断开——本次会话需重新连接")
+                        currentClient?.let { requestWifiRecovery(it) }
                     }
                 }
             val wifiCredentialHook: (Iap2SenderSession.WifiConfiguration) -> Unit =
@@ -1400,6 +1478,7 @@ object SessionController {
         // 测试台路径：监听手机侧 iPhone UUID，等 DiPlay/xcertplay 回连
         bluetoothClient?.start()
         bluetoothServer?.start()
+        appendLog("BT-FIRST: legacy14 inbound admission and announcement lifecycle; new outbound probes yield to incoming")
         // 诊断（奥迪实测：手机与车机「蓝牙已连接」时车机不开放 CarPlay）：
         // 连之前把目标设备的蓝牙配置文件状态打出来，失败时一眼看出是不是这个原因。
         Bg.run("bt-profile-diag") {
@@ -1426,6 +1505,7 @@ object SessionController {
         preserveDetection: Boolean = false,
     ) {
         connectCancelled = true
+        closeWifiRecovery()
         endpointGeneration.incrementAndGet()
         bringupGrace.cancel()
         discoverySuppressed = true
@@ -1711,6 +1791,7 @@ object SessionController {
         closeClient: Boolean = true,
         preserveScreenSocket: Boolean = false,
     ) {
+        closeWifiRecovery()
         audioResources?.close()
         audioResources = null
         audioResourceTicker?.cancel(false)
@@ -3542,6 +3623,19 @@ object SessionController {
                     action.explicitUi
                 }
             if (connectCancelled || currentClient !== client || !client.isConnectionCurrent(epoch)) return@execute
+            if (wifiConnector?.let { it.currentNetwork == null } == true) {
+                synchronized(modesActionLock) {
+                    val pending = screenReturnAfterWifi
+                    if (pending?.client === client && pending.epoch == epoch) {
+                        pending.explicitUi = pending.explicitUi || explicitUi
+                    } else {
+                        screenReturnAfterWifi = ScreenReturnAction(client, epoch, explicitUi)
+                    }
+                }
+                appendLog("RESOURCE-SCREEN: defer return until car network is rebound; no unbound SETUP")
+                requestWifiRecovery(client, explicitUi)
+                return@execute
+            }
             if (!explicitUi && !client.modes.phoneOwnsScreen && !client.modes.screenCanReturnOnInvite) {
                 appendLog("SCREEN: 奔驰新邀请未解除主屏借用/高约束，保持原车画面")
                 return@execute

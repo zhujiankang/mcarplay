@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — mercedes-carlife (0.1.23)
+
+Restore the vehicle-tested 0.1.14 Bluetooth inbound and announcement lifecycle; remove the later hard admission gate and preserve the original in-flight outbound behavior, with checks before new probes. Add bounded passive recovery of verified car Wi-Fi before screen return, retaining the original network request. Add per-recording CarLife delivery summaries and isolate late microphone write failures by generation.
+
+恢复已实测的 0.1.14 蓝牙入站与公告生命周期，撤销后加的硬接纳门闸；保留原在途出站行为，仅在新探测前复查。屏幕返回前有界重绑定已验证车机 Wi-Fi 并保留原请求；新增逐次录音写出统计及迟到错误代次隔离。
+
+Validation: standard 1116 + remote bridge 24 tests passed (0 failures/errors/skips); focused Bluetooth/network/microphone suite 152 passed. Added 15 standard tests and retired 8 tests for the removed gate. Spotless, standard lint (0 errors), debug build and same-certificate verification passed. No 0.1.23 vehicle acceptance; cold pairing, Home re-entry and microphone ASR require separate vehicle tests. See `docs/MERCEDES-CARLIFE-0.1.23.md`.
+
 ## Unreleased — mercedes-carlife (0.1.21)
 
 Reserve one Bluetooth transport across inbound/outbound paths. Accepted inbound cancels a pending outbound socket before iAP2 starts; a completed outbound transport and existing inbound owner reject duplicates. Recheck state after SDP and between candidates, discard late outbound success, clear service caches on bond changes, and add negotiation counters without raw payloads. Preserve 0.1.20 resource and screen behavior.

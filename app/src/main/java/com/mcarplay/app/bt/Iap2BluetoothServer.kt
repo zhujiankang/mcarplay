@@ -74,9 +74,6 @@ class Iap2BluetoothServer(
     /** [activeChannel] 上的会话对象（与之同锁维护），退役时据此发 0xEA01。 */
     private var activeSession: Iap2SenderSession? = null
     private val channelLock = Any()
-    private val inboundLease =
-        java.util.concurrent.atomic
-            .AtomicReference<BluetoothConnectionGate.Lease?>(null)
 
     val isRunning: Boolean get() = listener.isRunning
 
@@ -233,30 +230,9 @@ class Iap2BluetoothServer(
                 runCatching { socket.close() }
                 continue
             }
-            val lease = BtSessionGate.connections.acceptInbound { socket.close() }
-            if (lease == null) {
-                log("BT-ARBITER: duplicate incoming RFCOMM closed; keep current negotiation")
-                runCatching { socket.close() }
-                continue
-            }
-            synchronized(channelLock) { inboundLease.set(lease) }
-            if (!listener.isCurrent(records)) {
-                inboundLease.compareAndSet(lease, null)
-                lease.cancel()
-                break
-            }
-            log("BT-ARBITER: inbound reserved; pending outbound cancelled before negotiation")
             log("BT: 接收端已连入 name=$peerName，开始 iAP2 发送端会话")
             val observation = ReceiverDetectionRuntime.observation(peerAddress)
-            Thread({
-                try {
-                    if (listener.isCurrent(records) && lease.isCurrent) runSession(socket, observation, lease)
-                } finally {
-                    inboundLease.compareAndSet(lease, null)
-                    lease.close()
-                    runCatching { socket.close() }
-                }
-            }, "iap2-bt-session").apply {
+            Thread({ runSession(socket, observation) }, "iap2-bt-session").apply {
                 isDaemon = true
                 start()
             }
@@ -303,7 +279,6 @@ class Iap2BluetoothServer(
     private fun runSession(
         socket: BluetoothSocket,
         observation: ReceiverObservation?,
-        lease: BluetoothConnectionGate.Lease,
     ) {
         val stream =
             StreamDuplexStream(socket.inputStream, socket.outputStream) {
@@ -311,11 +286,8 @@ class Iap2BluetoothServer(
             }
         val channel = Iap2LinkChannel(stream, name = "iap2-bt") { line -> log(line) }
         synchronized(channelLock) {
-            if (!lease.isCurrent) {
-                channel.close()
-                return
-            }
             activeChannel = channel
+            BtSessionGate.inboundActive = true
         }
         try {
             if (!onIncomingSession()) return
@@ -344,6 +316,7 @@ class Iap2BluetoothServer(
                 if (activeChannel === channel) {
                     activeChannel = null
                     activeSession = null
+                    BtSessionGate.inboundActive = false
                 }
             }
             channel.close()
@@ -358,18 +331,15 @@ class Iap2BluetoothServer(
      * 为 null 时立即关闭，用于 AirPlay 配对前复现控制通道退役状态。
      */
     fun detachCurrentSession(eaStopReason: String? = null) {
-        val (channel, session, lease) =
+        val (channel, session) =
             synchronized(channelLock) {
-                Triple(activeChannel, activeSession, inboundLease.getAndSet(null)).also {
+                (activeChannel to activeSession).also {
                     activeChannel = null
                     activeSession = null
+                    BtSessionGate.inboundActive = false
                 }
             }
-        if (channel == null) {
-            lease?.cancel()
-            return
-        }
-        lease?.close()
+        channel ?: return
         retireControlLink(session, eaStopReason) { channel.close() }
         log(
             if (eaStopReason == null) {
@@ -382,7 +352,6 @@ class Iap2BluetoothServer(
 
     fun stop() {
         listener.stop()
-        detachCurrentSession()
         log("BT: 监听已停止")
     }
 }
