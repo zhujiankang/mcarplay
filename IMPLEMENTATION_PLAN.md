@@ -1,5 +1,9 @@
 # mcarplay：CarWith 转无线 CarPlay 实施计划
 
+## 2026-11-17：0.1.21蓝牙入口修复候选
+
+用户0.1.20报告cd1a5486当前进程9f40f8be在19:53接受车机iAP2入站后，仍于19:53:13.450发起对车机的出站；未完成链路协商、未进入Wi-Fi/AirPlay。本轮新增双向传输所有权、入站取消待连出站、重复入站隔离、SDP后/候选间重检、重新配对缓存刷新和握手统计。导出为Android17/API37、CarWith4.0.23，与此前环境不同。完整standard1109项、remote bridge24项（均0失败/错误/跳过）、Spotless、lint（0错误）、debug构建和同证书校验通过。不能据此宣称奔驰图标或连接已恢复；见 `docs/MERCEDES-CARLIFE-0.1.21.md`。
+
 ## 2026-11-17：0.1.20候选
 
 参考CatPlay的整笔资源事务思路，修正live changeModes逐项修改并始终成功的问题；非法请求不触发归属/语音改变与媒体操作。/info初始兼容路径、命名借用与0.1.19屏幕退役保留。语音新增认证后信号统计，区分静音和队列拒绝。完整standard1099项及remote bridge24项（均0失败/错误/跳过）、Spotless、lint（0错误）、debug构建与同证书校验通过；未知约束继续禁止抢占，错误确认体不提交手机归属。无新增GLC实测；见 `docs/MERCEDES-CARLIFE-0.1.20.md`。

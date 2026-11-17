@@ -1,5 +1,7 @@
 # mcarplay
 
+> `0.1.21-debug` prevents competing inbound/outbound Bluetooth negotiations, cancels pending probes when the car connects, isolates duplicate connections and refreshes service caches after pairing changes. It adds byte/DETECT/frame negotiation diagnostics. The reported 0.1.20 failure occurred before Wi-Fi/AirPlay; Mercedes reconnection still requires vehicle testing. See the [fix and test guide (Chinese)](docs/MERCEDES-CARLIFE-0.1.21.md).
+
 > `0.1.20-debug` validates live resource transactions before committing any ownership or speech state. Rejected requests return an error and cannot trigger stream changes. Aggregate microphone level/silence diagnostics distinguish authenticated input from usable audio; 0.1.19 screen retirement remains in place. Vehicle recovery and ASR still need testing; see the [fix and test guide (Chinese)](docs/MERCEDES-CARLIFE-0.1.20.md).
 
 > `0.1.19-debug` corrects screen retirement order: quiesce video, confirm scoped TEARDOWN, then close TCP. A retained sender owner covers rejection, timeout, cancellation, reconnect and failed restoration; orderly user disconnect defers pending socket disposal. A dual-TCP peer reproduces the previous EOF risk. Mercedes vehicle recovery and ASR remain unverified; see the [fix and test guide (Chinese)](docs/MERCEDES-CARLIFE-0.1.19.md).

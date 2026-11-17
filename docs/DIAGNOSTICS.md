@@ -1,5 +1,9 @@
 # Connection Diagnostics
 
+## 0.1.21蓝牙连接仲裁与握手
+
+`BT-ARBITER:` 记录入站预留、取消未完成出站以及关闭重复连接。取消的出站计CANCELLED，不应推断车机拒绝并进入只等回连策略。`LINK-NEGOTIATION:` 的ready/rxBytes/detect/frames分别为链路就绪、收到的原始字节数、完整合法DETECT数和有效链路帧数；DETECT前3次记录阶段，关闭时汇总。rxBytes>0不等于收到同步帧，ready也不等于MFi/媒体成功。旧日志的wire payload omitted不足以反推报文字节。入站诊断的ACCEPTED_IAP2表示目标筛选通过，须继续检查BT-ARBITER是否接纳为当前传输。见 [0.1.21说明](MERCEDES-CARLIFE-0.1.21.md)。
+
 ## 0.1.20资源事务与麦克风信号
 
 `EVENT: changeModes accepted=true/false` 对应原请求的plist status=0/1；false不触发媒体回调或补发modesChanged。拒绝时不打印非法字段正文。`modesChanged acknowledgement rejected; ownership not committed`说明对端200的确认体损坏、status类型错误或明确非零，手机不会提交资源申请。`MIC: first authenticated input` 的rate为协商输入采样率，afterReceiverStartMs从接收线程启动前计时，并非完整连接延迟。麦克风摘要增加queueRejected（回调未接受的认证包）、pcmSamples（重采样前样本数）、zeroPackets（PCM全零包）、peak和rms（16位幅度累计统计）。只统计已认证s16LE数据，不存储语音/波形，不作VAD或因静音断开。queued不等于CarLife已写出，需对照原有carlifeWritten和dropped。见 [0.1.20说明](MERCEDES-CARLIFE-0.1.20.md)。

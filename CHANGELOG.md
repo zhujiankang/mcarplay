@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — mercedes-carlife (0.1.21)
+
+Reserve one Bluetooth transport across inbound/outbound paths. Accepted inbound cancels a pending outbound socket before iAP2 starts; a completed outbound transport and existing inbound owner reject duplicates. Recheck state after SDP and between candidates, discard late outbound success, clear service caches on bond changes, and add negotiation counters without raw payloads. Preserve 0.1.20 resource and screen behavior.
+
+统一蓝牙双向建链所有权；入站在握手前取消未完成出站，已建立的传输不被重复连接替换。SDP等待后/候选间复查状态，拒绝迟到成功，配对变化后清缓存，新增握手统计。保留0.1.20资源与屏幕流程。
+
+Validation: standard 1109 + remote bridge 24 tests passed (0 failures/errors/skips); 10 new standard tests. Spotless, standard lint (0 errors), debug build and same-certificate verification passed. No 0.1.21 vehicle acceptance. See `docs/MERCEDES-CARLIFE-0.1.21.md`.
+
 ## Unreleased — mercedes-carlife (0.1.20)
 
 Validate and stage accessory changeModes transactions atomically; reject malformed fields without changing ownership, speech, revision or audio transfer queues, and suppress media callbacks for rejected requests. Reject malformed modesChanged acknowledgements before committing phone ownership. Preserve restrictive unknown constraints, sparse and repeated-field compatibility and the 0.1.19 screen lifecycle. Add authenticated microphone PCM level and zero-packet diagnostics without retaining audio or treating silence as failure. See `docs/MERCEDES-CARLIFE-0.1.20.md`.

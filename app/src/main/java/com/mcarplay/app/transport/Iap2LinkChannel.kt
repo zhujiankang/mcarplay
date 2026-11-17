@@ -40,10 +40,17 @@ class Iap2LinkChannel(
     /** 逐帧摘要日志预算（每方向每连接）。 */
     private var rxFrameLogs = 0
     private var txFrameLogs = 0
+    private var receivedBytes = 0L
+    private var receivedFrames = 0L
+    private var receivedDetects = 0L
 
     val isAlive: Boolean get() = !terminated
 
     init {
+        engine.onDetect = {
+            receivedDetects++
+            if (receivedDetects <= 3) log("LINK-NEGOTIATION: received DETECT; awaiting synchronization")
+        }
         engine.onFileTransferData = { if (it.size <= 2048) fileControls.offer(it.copyOf()) }
         engine.onOptionalPacketStalled = { optionalFailed = true }
         engine.onPeerSynchronizationAdopted = { sync ->
@@ -56,6 +63,7 @@ class Iap2LinkChannel(
             log("LINK: 丢弃未知会话 $sessionId 的数据帧（$size 字节）")
         }
         engine.onFrameReceived = { control, sequence, ack, sessionId, size ->
+            receivedFrames++
             lastPeerFrameAtMillis = nowMillis()
             // 真车调试关键观测：车机在识别阶段是否回帧、回什么（静默分歧全靠它定位）
             if (rxFrameLogs < FRAME_LOG_LIMIT) {
@@ -176,6 +184,7 @@ class Iap2LinkChannel(
                 if (count == 0) continue
                 synchronized(lock) {
                     if (terminated) return
+                    receivedBytes += count
                     dumpInbound(buffer.copyOf(count))
                     engine.feed(buffer.copyOf(count), nowMillis())
                     processEventsLocked()
@@ -286,6 +295,7 @@ class Iap2LinkChannel(
         lock.notifyAll()
         runCatching { stream.close() }
         terminatedLatch.countDown()
+        log("LINK-NEGOTIATION: ready=$readySignalled rxBytes=$receivedBytes detect=$receivedDetects frames=$receivedFrames")
         if (failure != null) {
             log("LINK closed: ${failure.message}")
         } else {
