@@ -41,6 +41,8 @@ class ScreenStreamLifecycleTest {
                 val pending = worker.submit(Callable { client.record() })
                 val oldRecord = peer.next()!!
                 assertEquals("RECORD", oldRecord.method)
+                assertTrue(client.teardownScreenStream())
+                assertEquals("TEARDOWN", peer.next()!!.method)
                 assertNotNull(client.runScreenStream(null, "test"))
                 assertEquals("SETUP", peer.next()!!.method)
                 oldRecord.respond(200)

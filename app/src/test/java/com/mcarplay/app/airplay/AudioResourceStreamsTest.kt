@@ -65,6 +65,23 @@ class AudioResourceStreamsTest {
         }
     }
 
+    @Test fun speechPreparationWaitsForConfirmedOutputRetirementAndPreservesMediaIntent() {
+        val h = Harness()
+        h.intent.userPlayback(true)
+        h.streams.reconcile()
+        h.modes.setSpeechRecognition(true)
+        h.stopOk = false
+        assertFalse(h.streams.prepareForSpeech())
+        assertTrue(h.intent.media)
+        h.now += 2001
+        h.stopOk = true
+        assertTrue(h.streams.prepareForSpeech())
+        assertTrue(h.intent.media)
+        h.modes.setSpeechRecognition(false)
+        h.streams.reconcile()
+        assertEquals(2, h.events.count { it == "start" })
+    }
+
     @Test fun promptPrerollKeepsItsBorrowUntilBufferedAudioCanDrain() {
         val h = Harness()
         h.take(1)

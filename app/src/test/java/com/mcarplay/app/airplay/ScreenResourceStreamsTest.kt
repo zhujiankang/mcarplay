@@ -170,7 +170,8 @@ class ScreenResourceStreamsTest {
                 onFailure = { failures++ },
             )
         assertFalse(streams.reconcile())
-        assertEquals(1, failures)
+        assertEquals(0, failures) // first local failure remains recoverable, not whole-session fatal
+        assertEquals(ScreenResourceStreams.State.RETIRE_PENDING, streams.state)
     }
 
     @Test
@@ -182,6 +183,122 @@ class ScreenResourceStreamsTest {
         streams.reconcile(forceRebuild = true)
         assertEquals(listOf("screen TEARDOWN"), events)
         assertFalse(streams.attached)
+    }
+
+    @Test fun retirementMustBeConfirmedBeforeAnyReplacementAndRetriesAreBounded() {
+        var time = 0L
+        var owns = false
+        var retireOk = false
+        val events = mutableListOf<String>()
+        val streams =
+            ScreenResourceStreams(
+                { true },
+                { owns },
+                {
+                    events += "retire"
+                    retireOk
+                },
+                {
+                    events += "restore"
+                    ScreenResourceStreams.RestoreResult.RESTORED
+                },
+                { events += "exhausted" },
+                now = { time },
+            )
+        repeat(3) { attempt ->
+            time = attempt * 2500L
+            assertFalse(streams.reconcile())
+            repeat(20) { assertFalse(streams.reconcile()) }
+        }
+        assertEquals(listOf("retire", "retire", "retire", "exhausted"), events)
+        owns = true
+        retireOk = true
+        time += 2500
+        assertFalse(streams.reconcile()) // an ordinary invitation cannot reset the exhausted budget
+        assertTrue(streams.reconcile(explicitRetry = true))
+        assertEquals(listOf("retire", "restore"), events.takeLast(2))
+        assertTrue(streams.attached)
+    }
+
+    @Test fun failedRestoreRetriesLocallyAndStopsWhileTheCarOwnsTheScreen() {
+        var time = 0L
+        var owns = false
+        var ready = false
+        var restores = 0
+        val streams =
+            ScreenResourceStreams(
+                { true },
+                { owns },
+                { true },
+                {
+                    restores++
+                    if (ready) ScreenResourceStreams.RestoreResult.RESTORED else ScreenResourceStreams.RestoreResult.FAILED
+                },
+                { error("Must preserve audio/control") },
+                now = { time },
+            )
+        assertTrue(streams.reconcile())
+        owns = true
+        assertFalse(streams.reconcile())
+        assertEquals(1, restores)
+        time = 2500
+        owns = false // reverse camera intervenes before the retry
+        assertTrue(streams.reconcile())
+        assertEquals(1, restores)
+        owns = true
+        ready = true
+        assertTrue(streams.reconcile())
+        assertEquals(2, restores)
+    }
+
+    @Test fun endedRetainedVideoRequiresRetirementRatherThanReusingItsDeadSocket() {
+        val events = mutableListOf<String>()
+        val streams =
+            ScreenResourceStreams(
+                { true },
+                { true },
+                {
+                    events += "retire"
+                    true
+                },
+                {
+                    events += "restore"
+                    ScreenResourceStreams.RestoreResult.RESTORED
+                },
+                { error(it) },
+                retainScreenStream = { true },
+            )
+        streams.streamEnded()
+        assertTrue(streams.recoveryPending)
+        assertTrue(streams.reconcile())
+        assertEquals(listOf("retire", "restore"), events)
+        assertFalse(streams.outputPaused)
+    }
+
+    @Test fun replacementAndExceptionsCannotOperateAfterSessionClose() {
+        var current = true
+        var time = 0L
+        var calls = 0
+        val streams =
+            ScreenResourceStreams(
+                { current },
+                { false },
+                {
+                    calls++
+                    throw java.io.IOException()
+                },
+                { error("Must retire first") },
+                { error(it) },
+                now = { time },
+            )
+        assertFalse(streams.reconcile())
+        time = 2500
+        current = false
+        assertFalse(streams.reconcile(explicitRetry = true))
+        streams.close()
+        current = true
+        assertFalse(streams.reconcile())
+        assertEquals(1, calls)
     }
 
     private fun streams(

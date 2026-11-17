@@ -6,7 +6,7 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import kotlin.concurrent.thread
 
-/** Bounded-by-lease mono silence/clock for a negotiated duplex speech stream. No device capture. */
+/** Lease-scoped mono assistant PCM, with silence when idle, for a negotiated duplex speech stream. */
 internal class SpeechDownlink(
     peer: InetAddress,
     dataPort: Int,
@@ -15,6 +15,7 @@ internal class SpeechDownlink(
     sampleRate: Int,
     private val allowed: () -> Boolean,
     log: (String) -> Unit,
+    private val pcm: SpeechPcmBuffer = SpeechPcmBuffer(sampleRate),
 ) : AutoCloseable {
     private val frames =
         (sampleRate / 50).also {
@@ -29,13 +30,12 @@ internal class SpeechDownlink(
         val packetizer = AudioSender(peer.hostAddress!!, dataPort, key, {}, sampleRate = sampleRate, streamType = 100)
         worker =
             thread(name = "speech-downlink", isDaemon = true) {
-                val silence = ByteArray(frames * 2)
                 var count = 0L
                 var next = System.nanoTime()
                 try {
                     while (!closed && allowed()) {
                         val stamp = count * frames
-                        val packet = packetizer.sealPacket(silence, (count and 65535).toInt(), stamp, count, count == 0L)
+                        val packet = packetizer.sealPacket(pcm.frame(frames), (count and 65535).toInt(), stamp, count, count == 0L)
                         if (closed || !allowed()) break
                         socket.send(DatagramPacket(packet, packet.size, peer, dataPort))
                         if (controlPort > 0 && count % 50 == 0L) {
@@ -60,6 +60,7 @@ internal class SpeechDownlink(
                 } finally {
                     socket.close()
                     key.fill(0)
+                    pcm.clear()
                     log("MIC: speech downlink stopped packets=$count")
                 }
             }

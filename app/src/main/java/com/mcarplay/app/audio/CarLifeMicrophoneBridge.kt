@@ -1,6 +1,7 @@
 package com.mcarplay.app.audio
 
 import com.mcarplay.app.airplay.AirPlayClient
+import com.mcarplay.app.carlife.CarLifeAudioEvent
 import com.mcarplay.app.carlife.CarLifeSession
 import java.net.InetAddress
 import java.security.SecureRandom
@@ -12,11 +13,13 @@ internal class CarLifeMicrophoneBridge(
     private val log: (String) -> Unit,
     private val recognitionTimeoutMs: Long = 30_000,
     private val firstPacketTimeoutMs: Long = 3_000,
-) {
-    private val worker =
+    private val worker: java.util.concurrent.Executor =
         Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "voice-control").apply { isDaemon = true }
-        }
+        },
+    private val prepareAudio: ((AirPlayClient, Long) -> Boolean)? = null,
+    private val onStateChanged: () -> Unit = {},
+) {
     private val watchdog =
         Executors.newSingleThreadScheduledExecutor { runnable ->
             Thread(runnable, "voice-timeout").apply { isDaemon = true }
@@ -27,7 +30,10 @@ internal class CarLifeMicrophoneBridge(
         val source: CarLifeSession,
         val epoch: Long,
         val id: Long,
+        val speech: SpeechPcmBuffer,
     ) {
+        var borrowedAudio = false
+
         @Volatile var receiver: CarMicrophoneReceiver? = null
 
         @Volatile var downlink: SpeechDownlink? = null
@@ -54,12 +60,8 @@ internal class CarLifeMicrophoneBridge(
         if (active?.let { it.source === source && it.client === client && !it.cancelled } == true) return
         stop()
         // A second type100 stream can replace a receiver's active type100 output. Preserve working playback.
-        if (outputType != null && outputType != 102L) {
+        if (outputType != null && outputType != 102L && prepareAudio == null) {
             log("MIC: skipped; input type100 would conflict with active output; keep existing audio")
-            return
-        }
-        if (!client.modes.phoneOwnsAudio) {
-            log("MIC: skipped; main audio is owned by the car")
             return
         }
         val profile =
@@ -67,13 +69,28 @@ internal class CarLifeMicrophoneBridge(
                 log("MIC: skipped; no advertised speechRecognition PCM input")
                 return
             }
-        val lease = Lease(client, source, client.connectionGeneration, (SecureRandom().nextLong() and Long.MAX_VALUE).coerceAtLeast(1))
+        val lease =
+            Lease(
+                client,
+                source,
+                client.connectionGeneration,
+                (SecureRandom().nextLong() and Long.MAX_VALUE).coerceAtLeast(1),
+                SpeechPcmBuffer(profile.sampleRate),
+            )
         active = lease
         val privateSecret = secret.copyOf()
         source.beginMicrophone()
         worker.execute {
             var started = false
             try {
+                if (!valid(lease, requireAudio = false)) return@execute
+                if (!client.modes.phoneOwnsAudio) {
+                    if (!client.acquireAudioResource(500, temporary = true, lease.epoch)) {
+                        log("MIC: speech audio borrow denied; retain car resource constraints")
+                        return@execute
+                    }
+                    lease.borrowedAudio = true
+                }
                 if (!valid(lease)) return@execute
                 val host = client.activeHost ?: return@execute
                 val receiver = CarMicrophoneReceiver(InetAddress.getByName(host), source::offerMicrophone, log)
@@ -83,6 +100,11 @@ internal class CarLifeMicrophoneBridge(
                     return@execute
                 }
                 if (!client.setSpeechRecognitionState(true, lease.epoch)) return@execute
+                if (prepareAudio?.invoke(client, lease.epoch) == false || !valid(lease)) {
+                    log("MIC: output retirement unconfirmed; no overlapping speech SETUP")
+                    return@execute
+                }
+                onStateChanged()
                 if (!client.assertModes(expectedEpoch = lease.epoch) || !valid(lease)) return@execute
                 val stream =
                     client.openMicrophone(
@@ -118,6 +140,7 @@ internal class CarLifeMicrophoneBridge(
                             profile.sampleRate,
                             allowed = { !lease.cancelled && client.isConnectionCurrent(lease.epoch) && client.modes.phoneOwnsAudio },
                             log = log,
+                            pcm = lease.speech,
                         )
                 }
                 lease.inputTimeout =
@@ -144,12 +167,26 @@ internal class CarLifeMicrophoneBridge(
             }, recognitionTimeoutMs, TimeUnit.MILLISECONDS)
     }
 
-    @Synchronized private fun valid(lease: Lease): Boolean =
+    /** Source callback never performs network I/O; bounded mono PCM is drained by the speech worker. */
+    @Synchronized fun offerSpeech(
+        source: CarLifeSession,
+        event: CarLifeAudioEvent,
+    ): Boolean {
+        val lease = active ?: return false
+        if (lease.source !== source || lease.cancelled) return false
+        lease.speech.offer(event)
+        return true
+    }
+
+    @Synchronized private fun valid(
+        lease: Lease,
+        requireAudio: Boolean = true,
+    ): Boolean =
         active === lease &&
             !lease.cancelled &&
             lease.client.isConnectionCurrent(lease.epoch) &&
             lease.source.isRunning &&
-            lease.client.modes.phoneOwnsAudio
+            (!requireAudio || lease.client.modes.phoneOwnsAudio)
 
     @Synchronized
     fun stop(source: CarLifeSession? = null) {
@@ -162,7 +199,8 @@ internal class CarLifeMicrophoneBridge(
         lease.source.endMicrophone()
         lease.receiver?.close()
         lease.downlink?.close()
-        lease.client.setSpeechRecognitionState(false, lease.epoch)
+        lease.speech.clear()
+        // Keep output suspended until scoped input retirement has been processed on the same control worker.
         worker.execute { cleanup(lease) }
     }
 
@@ -181,14 +219,22 @@ internal class CarLifeMicrophoneBridge(
         lease.receiver?.close()
         lease.downlink?.close()
         // A rejected SETUP never created a stream. Some receivers treat an unknown type100 teardown broadly.
-        if (lease.setupAccepted) {
-            val retired = runCatching { lease.client.teardownMicrophone(lease.id, lease.epoch) }.getOrDefault(false)
-            log("MIC: input retired teardownAccepted=$retired")
-        } else {
-            log("MIC: input SETUP not accepted; no TEARDOWN for uncreated stream")
-        }
+        val retired =
+            if (lease.setupAccepted) {
+                runCatching { lease.client.teardownMicrophone(lease.id, lease.epoch) }.getOrDefault(false).also {
+                    log("MIC: input retired teardownAccepted=$it")
+                }
+            } else {
+                log("MIC: input SETUP not accepted; no TEARDOWN for uncreated stream")
+                true
+            }
         if (lease.client.setSpeechRecognitionState(false, lease.epoch)) {
-            runCatching { lease.client.assertModes(expectedEpoch = lease.epoch) }
+            if (retired && lease.borrowedAudio && lease.client.modes.phoneBorrowsAudio) {
+                runCatching { lease.client.releaseAudioBorrow(lease.epoch) }
+            } else {
+                runCatching { lease.client.assertModes(expectedEpoch = lease.epoch) }
+            }
+            onStateChanged()
         }
     }
 }

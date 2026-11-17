@@ -126,7 +126,10 @@ internal class ModeArbiter {
     }
 
     @Synchronized fun setSpeechRecognition(active: Boolean) {
-        speechRecognition = active
+        if (speechRecognition != active) {
+            speechRecognition = active
+            revision++
+        }
     }
 
     @Synchronized fun applyInitial(modes: Map<*, *>?): String {
@@ -193,10 +196,11 @@ internal class ModeArbiter {
 
     @Synchronized fun onUserReturnedToCar(): String {
         revision++
-        resources.values.forEach {
-            it.permanent = Entity.ACCESSORY
-            it.phoneBorrowing = false
-            it.takeConstraint = CONSTRAINT_ANYTIME
+        // Leaving the UI does not select another audio source. Preserve music and all camera loans.
+        resources.getValue(SCREEN).apply {
+            permanent = Entity.ACCESSORY
+            phoneBorrowing = false
+            takeConstraint = CONSTRAINT_ANYTIME
         }
         screenRelinquished = true
         return describe()

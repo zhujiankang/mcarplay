@@ -1,84 +1,137 @@
 package com.mcarplay.app.airplay
 
-/**
- * 主屏归属与媒体流的串行协调。参考 CarPToCarL 的 CarPlayResourceStreams，保留本项目的会话代数保护。
- * 调用方在控制工作线程调用 reconcile；事件线程只做仲裁和应答。
- * 默认让出时退役屏幕流、归还时重新 SETUP/RECORD；已核对的奔驰保持原屏幕连接，仅门控图像。
- * 源端、音频与控制通道由会话持有。
- */
+/** Serial main-screen lifecycle. Local failures never tear down audio, CarWith or the control session. */
 internal class ScreenResourceStreams(
     private val isCurrent: () -> Boolean,
     private val phoneOwnsScreen: () -> Boolean,
     private val retireScreen: () -> Boolean,
     private val restoreScreen: () -> RestoreResult,
     private val onFailure: (String) -> Unit,
-    /** A receiver may require one persistent video connection across native UI/camera overlays. */
     private val retainScreenStream: () -> Boolean = { false },
     private val onRetainedScreenVisibility: (Boolean) -> Unit = {},
+    private val now: () -> Long = { System.nanoTime() / 1_000_000 },
+    private val onRetry: (String) -> Unit = {},
 ) {
     enum class RestoreResult { RESTORED, ABORTED, FAILED }
 
-    @Volatile
-    private var closed = false
+    enum class State { ATTACHED, HIDDEN, DETACHED, RETIRE_PENDING, RESTORE_PENDING, EXHAUSTED, CLOSED }
 
-    @Volatile
-    var attached = true
+    @Volatile private var closed = false
+
+    @Volatile var state = State.ATTACHED
+        private set
+
+    @Volatile var attached = true
         private set
 
     private var retainedHidden = false
+    private var retirementPending = false
+    private var failures = 0
+    private var nextAttempt = 0L
+
+    val recoveryPending: Boolean get() = state == State.RETIRE_PENDING || state == State.RESTORE_PENDING
 
     val outputPaused: Boolean get() = !attached || !phoneOwnsScreen()
 
     fun close() {
         closed = true
+        state = State.CLOSED
     }
 
     private fun alive(): Boolean = !closed && isCurrent()
 
-    private fun fail(reason: String) {
+    private fun retry(reason: String) {
         if (!alive()) return
-        closed = true
-        onFailure(reason)
+        failures++
+        nextAttempt = now() + RETRY_DELAY_MS
+        state =
+            if (failures >= MAX_ATTEMPTS) {
+                State.EXHAUSTED
+            } else if (retirementPending) {
+                State.RETIRE_PENDING
+            } else {
+                State.RESTORE_PENDING
+            }
+        onRetry("$reason attempt=$failures/$MAX_ATTEMPTS state=$state")
+        if (state == State.EXHAUSTED) onFailure(reason)
     }
 
-    fun reconcile(forceRebuild: Boolean = false): Boolean {
+    /** Called on the control worker only after verifying the ended sender is still installed. */
+    fun streamEnded() {
+        if (!alive() || state == State.EXHAUSTED) return
+        attached = false
+        retirementPending = true
+        state = State.RETIRE_PENDING
+    }
+
+    /** Explicit UI can start a fresh bounded recovery after cooldown; ordinary events/invitations cannot. */
+    fun reconcile(
+        forceRebuild: Boolean = false,
+        explicitRetry: Boolean = false,
+    ): Boolean {
         if (!alive()) return false
+        if (state == State.EXHAUSTED) {
+            if (!explicitRetry || now() < nextAttempt) return false
+            failures = 0
+        }
+        if (now() < nextAttempt) return false
         try {
             if (attached && retainScreenStream()) {
                 val visible = phoneOwnsScreen()
-                val hidden = !visible
-                if (retainedHidden != hidden) {
-                    retainedHidden = hidden
+                if (retainedHidden != !visible) {
+                    retainedHidden = !visible
                     onRetainedScreenVisibility(visible)
                 }
-                // Preserve the video socket, cipher and activation even for a stale UI rebuild request.
-                // VideoSender's ownership gate drops all frames while hidden, retaining keepalives.
+                state = if (visible) State.ATTACHED else State.HIDDEN
                 return alive()
             }
             if (attached && (!phoneOwnsScreen() || forceRebuild)) {
                 retainedHidden = false
                 attached = false
+                retirementPending = true
+            }
+            if (retirementPending) {
+                state = State.RETIRE_PENDING
                 if (!retireScreen()) {
-                    fail("主屏流退役失败")
+                    retry("主屏流退役未确认")
                     return false
                 }
+                retirementPending = false
+                state = State.DETACHED
             }
             if (!alive()) return false
-            if (!phoneOwnsScreen()) return true
+            if (!phoneOwnsScreen()) {
+                // A camera/car takeover aborts restoration, never re-acquires the resource.
+                state = State.DETACHED
+                failures = 0
+                nextAttempt = 0
+                return true
+            }
             if (!attached) {
+                state = State.RESTORE_PENDING
                 when (restoreScreen()) {
                     RestoreResult.ABORTED -> return false
                     RestoreResult.FAILED -> {
-                        fail("主屏流恢复失败")
+                        retry("主屏流恢复失败")
                         return false
                     }
                     RestoreResult.RESTORED -> attached = true
                 }
             }
-            return alive()
+            if (!alive()) return false
+            state = State.ATTACHED
+            failures = 0
+            nextAttempt = 0
+            return true
         } catch (error: Exception) {
-            fail("主屏流切换异常：${error.javaClass.simpleName}")
+            // State records whether the exact old stream still needs retirement before any SETUP.
+            retry("主屏流切换异常：${error.javaClass.simpleName}")
             return false
         }
+    }
+
+    companion object {
+        const val MAX_ATTEMPTS = 3
+        const val RETRY_DELAY_MS = 2_500L
     }
 }

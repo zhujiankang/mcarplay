@@ -127,6 +127,131 @@ class MicrophoneBridgeLifecycleTest {
         }
     }
 
+    @Test fun nativeAudioIsBorrowedForSpeechAndReturnedOnlyAfterInputRetirement() {
+        AirPlayRecordLifecycleTest.Peer().use { peer ->
+            val client = client(peer)
+            val source = source()
+            client.modes.onChangeModes(
+                mapOf(
+                    "resources" to
+                        listOf(
+                            mapOf(
+                                "resourceID" to 2L,
+                                "transferType" to 1L,
+                                "takeConstraint" to 500L,
+                                "borrowConstraint" to 500L,
+                            ),
+                        ),
+                ),
+            )
+            val bridge = CarLifeMicrophoneBridge({}, firstPacketTimeoutMs = 100)
+            try {
+                bridge.request(client, source, ByteArray(32), 102)
+                assertEquals("POST", peer.next()!!.method) // borrow audio
+                assertEquals("POST", peer.next()!!.method) // Speech state
+                assertEquals("SETUP", peer.next()!!.method)
+                assertEquals("TEARDOWN", peer.next()!!.method)
+                assertEquals("POST", peer.next()!!.method) // restore native audio owner
+                repeat(50) { if (client.modes.phoneOwnsAudio) Thread.sleep(10) }
+                assertFalse(client.modes.phoneOwnsAudio)
+                assertFalse(client.modes.recognizingSpeech)
+                assertTrue(source.isRunning)
+            } finally {
+                bridge.stop()
+                source.stop()
+                client.close()
+            }
+        }
+    }
+
+    @Test fun constrainedCarAudioAndUnconfirmedOutputRetirementNeverOpenMicrophone() {
+        AirPlayRecordLifecycleTest.Peer().use { peer ->
+            val client = client(peer)
+            val source = source()
+            val bridge = CarLifeMicrophoneBridge({}, prepareAudio = { _, _ -> false })
+            try {
+                client.modes.onChangeModes(
+                    mapOf(
+                        "resources" to
+                            listOf(
+                                mapOf(
+                                    "resourceID" to 2L,
+                                    "transferType" to 3L,
+                                    "unborrowConstraint" to 1000L,
+                                ),
+                            ),
+                    ),
+                )
+                bridge.request(client, source, ByteArray(32), 102)
+                val cleared = peer.next()!!
+                assertEquals("POST", cleared.method) // cleanup state, no microphone SETUP
+                assertNull(peer.next(100))
+                client.modes.onChangeModes(mapOf("resources" to listOf(mapOf("resourceID" to 2L, "transferType" to 4L))))
+                bridge.request(client, source, ByteArray(32), 100)
+                assertEquals("POST", peer.next()!!.method) // cleanup state, failed output retirement
+                assertNull(peer.next(100))
+                assertTrue(source.isRunning)
+            } finally {
+                bridge.stop()
+                source.stop()
+                client.close()
+            }
+        }
+    }
+
+    @Test fun sharedResourceWorkerRetiresActualType100OutputBeforeSpeechSetup() {
+        AirPlayRecordLifecycleTest.Peer().use { peer ->
+            val client = client(peer)
+            val source = source()
+            val worker =
+                java.util.concurrent.Executors
+                    .newSingleThreadExecutor()
+            peer.reply = { request ->
+                if (request.method == "SETUP") {
+                    request.respond(200, BinaryPlist.encode(mapOf("streams" to listOf(mapOf("type" to 100L, "dataPort" to 23456L)))))
+                } else {
+                    request.respond(200)
+                }
+            }
+            val bridge =
+                CarLifeMicrophoneBridge(
+                    {},
+                    worker = worker,
+                    prepareAudio = { activeClient, epoch -> activeClient.teardownOutputAudio(epoch) },
+                )
+            try {
+                assertTrue(
+                    client.runAudioStream(
+                        ByteArray(32),
+                        com.mcarplay.app.audio
+                            .AudioProfile("media", 0x8000, 48000, 200),
+                    ) != null,
+                )
+                assertEquals("SETUP", peer.next()!!.method)
+                assertEquals("GET_PARAMETER", peer.next()!!.method)
+                assertEquals("SET_PARAMETER", peer.next()!!.method) // existing volume fallback after empty query
+                bridge.request(client, source, ByteArray(32), 100)
+                assertEquals("TEARDOWN", peer.next()!!.method) // exact previous media output first
+                assertEquals("POST", peer.next()!!.method)
+                assertEquals("SETUP", peer.next()!!.method) // then speech input
+                worker.submit {}.get(2, java.util.concurrent.TimeUnit.SECONDS)
+                assertTrue(client.modes.recognizingSpeech)
+                bridge.stop()
+                assertEquals("TEARDOWN", peer.next()!!.method)
+                assertEquals("POST", peer.next()!!.method)
+                worker.submit {}.get(2, java.util.concurrent.TimeUnit.SECONDS)
+                assertFalse(client.modes.recognizingSpeech)
+                assertTrue(source.isRunning)
+            } finally {
+                bridge.stop()
+                worker.submit {}.get(2, java.util.concurrent.TimeUnit.SECONDS)
+                source.stop()
+                client.close()
+                worker.shutdownNow()
+            }
+        }
+    }
+
     private fun source(socket: Socket? = null): CarLifeSession {
         val source = CarLifeSession(Application(), onAccessUnit = {}, onEnded = {}, log = {})
 

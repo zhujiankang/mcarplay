@@ -23,6 +23,13 @@ internal class AudioResourceStreams(
         closed = true
     }
 
+    /** Called on the same control worker before opening a type100 speech stream. */
+    fun prepareForSpeech(): Boolean {
+        if (closed || !current() || !modes.recognizingSpeech) return false
+        reconcile()
+        return !active && !stopping
+    }
+
     fun reconcile() {
         if (closed || !current()) return
         while (true) {

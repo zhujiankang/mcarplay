@@ -384,14 +384,14 @@ class ModeArbiterTest {
     }
 
     @Test
-    fun returnToCarHandsBackScreenAndAudioAndAllowsRetake() {
+    fun returnToCarHandsBackOnlyScreenAndAllowsRetake() {
         val arbiter = ModeArbiter()
         assertTrue(arbiter.phoneOwnsScreen)
 
         arbiter.onUserReturnedToCar()
 
         assertFalse(arbiter.phoneOwnsScreen)
-        assertTrue(arbiter.resourcesPayload().all { it["entity"] == ModeArbiter.Entity.ACCESSORY.code })
+        assertTrue(arbiter.phoneOwnsAudio)
         val retake = arbiter.onUserRequestedUi()
         assertTrue(retake.allowed)
         assertTrue(retake.rebuildStream)

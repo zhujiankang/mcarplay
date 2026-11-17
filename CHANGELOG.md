@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — mercedes-carlife (0.1.18)
+
+Validation: standard 1075 + remote bridge 24 tests passed (0 failures/errors/skips); Spotless, standard lint (0 errors), debug build and same-certificate APK verification passed. No new vehicle validation.
+
+Fix Mercedes invitations after screen retirement; bound local screen recovery and confirm old stream retirement before replacement. Preserve main audio when leaving the CarWith UI. Serialize speech with resource actions, borrow/return audio on demand, retire output before microphone SETUP, and forward bounded mono assistant PCM over an advertised duplex speech stream. Vehicle acceptance remains pending; see `docs/MERCEDES-CARLIFE-0.1.18.md`.
+
+修复奔驰主屏退役后的邀请入口；屏幕局部恢复有界且先确认旧流退役。CarWith返回车机不擅自让出音乐。语音与资源操作串行，按需借还音频，先退役输出再协商麦克风，并在声明支持的双向语音流发送有界单声道助手PCM。尚无新实车验收，详见 `docs/MERCEDES-CARLIFE-0.1.18.md`。
+
 ## Unreleased — mercedes-carlife (0.1.17)
 
 Validation: standard 1061 + remote bridge 24 tests passed (0 failures/errors/skips); Spotless, standard lint (0 errors), standard debug build and same-certificate APK verification passed. Vehicle acceptance remains pending.

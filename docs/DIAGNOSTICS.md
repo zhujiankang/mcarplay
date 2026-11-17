@@ -1,5 +1,9 @@
 # Connection Diagnostics
 
+## 0.1.18屏幕与语音诊断
+
+`SCREEN-RECOVERY:` 记录局部状态、attempt=1..3和EXHAUSTED；2.5秒退避与冷却后明确requestUI重开预算。视频局部错误不自动结束音频/控制；真实连接关闭仍完整清理。`MIC:` 记录语音借用拒绝、媒体退役未确认、输入退役状态。语音输出最多300ms PCM缓存，不记录音频正文。仅有SETUP接受或本地PCM回环不证明车载麦克风实际识别；详情见 [0.1.18说明](MERCEDES-CARLIFE-0.1.18.md)。
+
 ## 0.1.15：统一资源申请/借用/归还
 
 `RESOURCE-SCREEN`为所有requestUI的确认式主屏申请；奔驰新邀请仍受借用/高约束限制。`RESOURCE-AUDIO: acquire media=... prompt=... temporary=... accepted=...`记录主音频申请，音乐500优先级、提示100临时借用；`releaseTemporary accepted=...`记录归还确认。`output stopped teardownAccepted=...`区分本地输出已停止与车机是否确认按描述符退役，不能用其中一项替代实际出声/主屏可见。输出流退役不等于会话结束，正常无播放意图时没有音频流不计故障。

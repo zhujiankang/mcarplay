@@ -108,7 +108,19 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 销毁/重建对其无影响。会话逻辑线程通过 [appContext] 运行，不依赖任何 Activity。
  */
 object SessionController {
-    private val microphoneBridge = CarLifeMicrophoneBridge(log = { appendLog(it) })
+    private val microphoneBridge by lazy {
+        CarLifeMicrophoneBridge(
+            log = ::appendLog,
+            worker = controlActions,
+            prepareAudio = { client, epoch ->
+                currentClient === client &&
+                    client.isConnectionCurrent(epoch) &&
+                    (audioResources?.prepareForSpeech() != false) &&
+                    stopResourceAudio(client, epoch)
+            },
+            onStateChanged = ::queueAudioResources,
+        )
+    }
     private val metadataRelay = MediaMetadataRelay { appendLog(it) }
     private val voiceKeyRouter =
         VoiceKeyRouter({ SystemClock.uptimeMillis() }) { key ->
@@ -702,6 +714,8 @@ object SessionController {
 
     private fun installAudioResources(client: AirPlayClient) {
         val epoch = client.connectionGeneration
+        val generation = endpointGeneration.get()
+        val attempt = streamingDiagnosticAttempt
         val source = currentCarLifeSession ?: return
 
         fun current() =
@@ -779,6 +793,11 @@ object SessionController {
         audioResourceTicker =
             controlActions.scheduleWithFixedDelay({
                 if (audioResources === resources) {
+                    if (currentClient === client && client.connectionGeneration == epoch && client.controlChannelClosed) {
+                        attempt?.let { endClientSession(client, generation, it, "控制连接已关闭") }
+                        return@scheduleWithFixedDelay
+                    }
+                    screenResourceStreams?.takeIf { it.recoveryPending }?.reconcile()
                     runCatching { resources.reconcile() }.onFailure {
                         appendLog("RESOURCE-AUDIO: reconciliation failed; next attempt remains bounded")
                     }
@@ -1246,8 +1265,13 @@ object SessionController {
                         client?.modes?.phoneOwnsAudio == true &&
                             !client.modes.recognizingSpeech &&
                             (channel != com.mcarplay.app.carlife.CarLifeChannel.MEDIA || resourceAudioIntent.media)
+                    val speechHandled =
+                        channel == com.mcarplay.app.carlife.CarLifeChannel.VOICE &&
+                            microphoneBridge.offerSpeech(session, event)
                     val bridge = nativeAudioBridge
-                    if (allowed && bridge != null) {
+                    if (speechHandled) {
+                        // Lease-scoped speech output uses its own negotiated mono stream, not media type102.
+                    } else if (allowed && bridge != null) {
                         bridge.submit(channel, event)
                     } else if (event is CarLifeAudioEvent.Pcm && audioEnabledForSession) {
                         promptPreroll.offer(channel, event, now)
@@ -1273,8 +1297,6 @@ object SessionController {
                 onReturnToCar = onReturnToCar@{
                     if (currentCarLifeSession !== session) return@onReturnToCar
                     val client = currentClient ?: return@onReturnToCar
-                    resourceAudioIntent.onCarAudioTransfer(com.mcarplay.app.airplay.ModeArbiter.CarAudioTransfer.TAKEN_PERMANENTLY)
-                    queueAudioResources()
                     val note = client.modes.onUserReturnedToCar()
                     enqueueModesAssert(client, "CarWith 返回车机（→ $note）", requestKeyFrame = false)
                 },
@@ -3439,12 +3461,24 @@ object SessionController {
      */
     private fun onCtrlInvite() {
         val client = currentClient ?: return
-        val streaming = !connectCancelled && !sessionStarting.get() && videoSender?.isRunning == true
-        if (!streaming) return
-        if (client.isMercedesReceiver() && !client.modes.phoneOwnsScreen) {
+        val liveSession =
+            !connectCancelled &&
+                !sessionStarting.get() &&
+                !client.controlChannelClosed &&
+                client.isConnectionCurrent(client.connectionGeneration)
+        val screens = screenResourceStreams
+        if (client.isMercedesReceiver() && liveSession && screens != null) {
+            if (screens.attached && client.modes.phoneOwnsScreen && videoSender?.isRunning == true) {
+                appendLog("CTRL: 奔驰主屏已在推流，重复邀请保持当前资源")
+                return
+            }
+            // Native Home deliberately retires the sender. A new invitation must still reach arbitration.
+            // Invitations never override a camera loan or imply an explicit requestUI.
             enqueueScreenReturn(client, fromRequestUi = false)
             return
         }
+        val streaming = liveSession && videoSender?.isRunning == true
+        if (!streaming) return
         val now = android.os.SystemClock.uptimeMillis()
         val decision =
             synchronized(inviteReconnectLock) {
@@ -3501,7 +3535,7 @@ object SessionController {
                     action.explicitUi
                 }
             if (connectCancelled || currentClient !== client || !client.isConnectionCurrent(epoch)) return@execute
-            if (!explicitUi && !client.modes.screenCanReturnOnInvite) {
+            if (!explicitUi && !client.modes.phoneOwnsScreen && !client.modes.screenCanReturnOnInvite) {
                 appendLog("SCREEN: 奔驰新邀请未解除主屏借用/高约束，保持原车画面")
                 return@execute
             }
@@ -3514,6 +3548,7 @@ object SessionController {
             appendLog("RESOURCE-SCREEN: 取回主屏 fromRequestUi=$explicitUi acquired=$acquired ${client.modes.describe()}")
             if (!acquired || connectCancelled || currentClient !== client || !client.isConnectionCurrent(epoch)) return@execute
             if (screenResourceStreams?.reconcile(
+                    explicitRetry = explicitUi,
                     forceRebuild =
                         explicitUi &&
                             !client.isMercedesReceiver() &&
@@ -4421,8 +4456,19 @@ object SessionController {
                                                     }
                                                 },
                                                 onEnded = {
-                                                    Bg.run("video-session-ended") {
-                                                        endClientSession(client, generation, diagnosticAttempt, "视频通道终止", sender)
+                                                    controlActions.execute {
+                                                        if (currentClient !== client || videoSender !== sender) return@execute
+                                                        val resources = screenResourceStreams
+                                                        if (resources != null &&
+                                                            !client.controlChannelClosed &&
+                                                            client.isConnectionCurrent(client.connectionGeneration)
+                                                        ) {
+                                                            appendLog("SCREEN-RECOVERY: 视频通道终止；仅调度屏幕退役/恢复")
+                                                            resources.streamEnded()
+                                                            resources.reconcile()
+                                                        } else {
+                                                            endClientSession(client, generation, diagnosticAttempt, "视频通道终止", sender)
+                                                        }
                                                     }
                                                 },
                                             )
@@ -4497,6 +4543,8 @@ object SessionController {
                                                     if (!isCurrent() || !client.modes.phoneOwnsScreen) {
                                                         return@recover ScreenResourceStreams.RestoreResult.ABORTED
                                                     }
+                                                    // Retire any accepted/uncertain previous SETUP before creating another stream.
+                                                    if (!client.teardownScreenStream()) return@recover failure()
                                                     val resumed =
                                                         client.runScreenStream(sessionKey, setup.displayUuid) ?: return@recover failure()
                                                     if (!isCurrent()) return@recover ScreenResourceStreams.RestoreResult.ABORTED
@@ -4543,8 +4591,11 @@ object SessionController {
                                                     }
                                                 },
                                                 onFailure = { reason ->
-                                                    if (isCurrent()) endClientSession(client, generation, diagnosticAttempt, reason)
+                                                    if (isCurrent()) {
+                                                        appendLog("SCREEN-RECOVERY: $reason；保留音频/控制，等待用户再次进入 CarPlay")
+                                                    }
                                                 },
+                                                onRetry = { reason -> appendLog("SCREEN-RECOVERY: $reason") },
                                             )
                                         }
                                 }

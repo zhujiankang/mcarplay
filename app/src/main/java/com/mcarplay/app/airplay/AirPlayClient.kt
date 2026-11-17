@@ -2278,6 +2278,10 @@ class AirPlayClient(
         // 同一台车机上不同 audioType 档位的可用性完全不同（见 AudioProfile 注释），
         // 单档失败就换下一档，而不是每次连接都盲试同一档。
         val negotiation = profile
+        if (profile.streamType == 100L && inputAudioStreams.isNotEmpty()) {
+            log("AUDIO: pending speech input retirement blocks conflicting type100 output")
+            return null
+        }
         log(
             "AIRPLAY: 音频协商 → audioType=${profile.audioType} " +
                 "format=0x${profile.formatBit.toString(16)} ${profile.sampleRate}Hz " +
@@ -2870,6 +2874,15 @@ class AirPlayClient(
                         ),
                 ),
             )
+        synchronized(this) {
+            if (!isConnectionCurrent(epoch) || screenStreamUuid != null) {
+                log("AIRPLAY: 主屏已有未退役流，拒绝叠加 SETUP")
+                return null
+            }
+            // Keep the exact ID even on timeout/malformed success so recovery can retire it safely.
+            screenStreamUuid = streamUuid
+            screenStreamConnectionId = connectionId
+        }
         // 请求路径与 catplay 完全一致：流 SETUP 走 "/"（初始 SETUP 走 "/setup"）。
         // 部分接收端（Audi 固件）对路径敏感，路径不符会整包 400。
         val (statusLine, responseBody) =
@@ -2885,7 +2898,13 @@ class AirPlayClient(
                 log("AIRPLAY: 流协商失败 - ${error.message}")
                 return null
             }
-        if (!statusLine.contains("200")) {
+        if (statusLine.split(' ').getOrNull(1) != "200") {
+            synchronized(this) {
+                if (isConnectionCurrent(epoch) && screenStreamConnectionId == connectionId) {
+                    screenStreamUuid = null
+                    screenStreamConnectionId = null
+                }
+            }
             log(
                 "AIRPLAY: 流协商应答 [$statusLine]（响应头：${lastResponseHeadOfRequest()}）\n" +
                     "  ↳ 请求体(${body.size}B)=" + body.joinToString("") { "%02x".format(it) },
@@ -2974,7 +2993,7 @@ class AirPlayClient(
         expectedEpoch: Long = connectionEpoch,
     ): Boolean =
         try {
-            val (status, _) =
+            val (status, response) =
                 request(
                     "TEARDOWN",
                     "/",
@@ -2985,7 +3004,10 @@ class AirPlayClient(
                     expectedEpoch = expectedEpoch,
                 )
             log("AIRPLAY: TEARDOWN（$target）[$status]")
-            status.split(' ').getOrNull(1) == "200" && connectionEpoch == expectedEpoch
+            val logical = runCatching { (BinaryPlist.parse(response) as? Map<*, *>)?.get("status") as? Number }.getOrNull()
+            status.split(' ').getOrNull(1) == "200" &&
+                (logical == null || logical.toLong() == 0L) &&
+                connectionEpoch == expectedEpoch
         } catch (error: IOException) {
             log("AIRPLAY: TEARDOWN（$target）失败 - ${error.message}")
             false
