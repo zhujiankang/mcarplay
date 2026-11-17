@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — mercedes-carlife (0.1.20)
+
+Validate and stage accessory changeModes transactions atomically; reject malformed fields without changing ownership, speech, revision or audio transfer queues, and suppress media callbacks for rejected requests. Reject malformed modesChanged acknowledgements before committing phone ownership. Preserve restrictive unknown constraints, sparse and repeated-field compatibility and the 0.1.19 screen lifecycle. Add authenticated microphone PCM level and zero-packet diagnostics without retaining audio or treating silence as failure. See `docs/MERCEDES-CARLIFE-0.1.20.md`.
+
+校验并暂存整笔车机资源请求；非法字段不改变归属、语音、状态代次或音频事件队列，拒绝后不触发媒体回调。手机申请的确认体损坏或状态类型错误时不提交归属。保留未知约束的禁止抢占行为、稀疏字段/重复约束兼容及0.1.19屏幕流程。新增已认证麦克风PCM音量与全零包统计，不保存音频，不因静音停止语音。
+
+Validation: standard 1099 + remote bridge 24 tests passed (0 failures/errors/skips); 14 new standard tests. Spotless, standard lint (0 errors), debug build and same-certificate verification passed. No new vehicle acceptance.
+
 ## Unreleased — mercedes-carlife (0.1.19)
 
 Validation: standard 1085 + remote bridge 24 tests passed (0 failures/errors/skips); Spotless, standard lint (0 errors), debug build and same-certificate APK verification passed. No new vehicle validation.

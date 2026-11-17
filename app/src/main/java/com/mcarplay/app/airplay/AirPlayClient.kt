@@ -981,11 +981,23 @@ class AirPlayClient(
                         (runCatching { PlistShape.describe(BinaryPlist.parseRecovered(response).value) }.getOrNull() ?: "非 plist")
                 }
             log("AIRPLAY: modesChanged（$state）[$statusLine]$responseShape")
-            val protocolStatus = runCatching { (BinaryPlist.parse(response) as? Map<*, *>)?.get("status") as? Number }.getOrNull()?.toLong()
-            statusLine.split(' ').getOrNull(1) == "200" && (protocolStatus == null || protocolStatus == 0L) && stillCurrent()
+            val acknowledged = modeAcknowledged(response)
+            if (!acknowledged) log("AIRPLAY: modesChanged acknowledgement rejected; ownership not committed")
+            statusLine.split(' ').getOrNull(1) == "200" && acknowledged && stillCurrent()
         } catch (error: IOException) {
             log("AIRPLAY: modesChanged 失败 - ${error.message}")
             false
+        }
+    }
+
+    /** Empty acknowledgements are common. A present but malformed body/status is not an acknowledgement. */
+    private fun modeAcknowledged(response: ByteArray): Boolean {
+        if (response.isEmpty()) return true
+        val root = runCatching { BinaryPlist.parseRecovered(response).value }.getOrNull() as? Map<*, *> ?: return false
+        if (!root.containsKey("status")) return true
+        return when (val status = root["status"]) {
+            is Byte, is Short, is Int, is Long -> (status as Number).toLong() == 0L
+            else -> false
         }
     }
 
@@ -3251,16 +3263,20 @@ class AirPlayClient(
                             }
                             val type = command["type"]?.toString() ?: "?"
                             if (!isConnectionCurrent(eventEpoch) || eventCommandSocket !== socket) return@Thread
+                            var accepted = true
                             val reply =
                                 if (type == "changeModes") {
                                     val response = modes.changeResponse(command["params"] as? Map<*, *>)
-                                    log("EVENT: changeModes 原请求应答（${modes.describe()}）")
+                                    accepted = response["status"] == 0L
+                                    log("EVENT: changeModes accepted=$accepted 原请求应答（${modes.describe()}）")
                                     BinaryPlist.encode(response)
                                 } else {
                                     ByteArray(0)
                                 }
                             respondEventRequest(cseq, reply, socket, eventEpoch)
                             if (!isConnectionCurrent(eventEpoch) || eventCommandSocket !== socket) return@Thread
+                            // Rejection cannot enqueue modesChanged, media pause or stream retirement.
+                            if (!accepted) continue
                             if (eventCommandCounts.merge(type, 1, Int::plus) == 1) {
                                 log("EVENT: 首次收到车机命令 type=$type 形状=${PlistShape.describe(command.filterKeys { it != "type" })}")
                             }

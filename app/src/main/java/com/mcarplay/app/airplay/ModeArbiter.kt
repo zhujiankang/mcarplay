@@ -143,7 +143,7 @@ internal class ModeArbiter {
         return applyRequests(modes, initial = true)
     }
 
-    @Synchronized fun onChangeModes(params: Map<*, *>?): String = applyRequests(params, initial = false)
+    @Synchronized fun onChangeModes(params: Map<*, *>?): String = if (applyTransaction(params)) describe() else "请求已拒绝，资源保持不变"
 
     class UiRequest(
         val note: String,
@@ -231,9 +231,31 @@ internal class ModeArbiter {
             "resources" to resourcesPayload(releaseScreen),
         )
 
-    @Synchronized fun changeResponse(params: Map<*, *>?): Map<String, Any?> {
-        onChangeModes(params)
-        return linkedMapOf("status" to 0L, "params" to parameters())
+    @Synchronized fun changeResponse(params: Map<*, *>?): Map<String, Any?> =
+        if (applyTransaction(params)) {
+            linkedMapOf("status" to 0L, "params" to parameters())
+        } else {
+            linkedMapOf("status" to 1L)
+        }
+
+    /** Validate and stage the entire accessory transaction before publishing any state or side effects. */
+    private fun applyTransaction(params: Map<*, *>?): Boolean {
+        if (!ModeChangeRequest.valid(params)) return false
+        val candidate = ModeArbiter()
+        resources.forEach { (id, resource) -> candidate.resources[id] = resource.duplicate() }
+        candidate.carAppStates.putAll(carAppStates)
+        candidate.carSpeechMode = carSpeechMode
+        candidate.screenRelinquished = screenRelinquished
+        candidate.audioTransfers.addAll(audioTransfers)
+        candidate.applyRequests(params, initial = false)
+        resources.putAll(candidate.resources)
+        carAppStates.putAll(candidate.carAppStates)
+        carSpeechMode = candidate.carSpeechMode
+        screenRelinquished = candidate.screenRelinquished
+        audioTransfers.clear()
+        audioTransfers.addAll(candidate.audioTransfers)
+        revision++
+        return true
     }
 
     @Synchronized fun describe(): String =

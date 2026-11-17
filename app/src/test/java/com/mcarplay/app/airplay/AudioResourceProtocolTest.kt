@@ -128,6 +128,40 @@ class AudioResourceProtocolTest {
         }
     }
 
+    @Test fun invalidSuccessfulRtspAcknowledgementCannotCommitMainAudioOwnership() {
+        AirPlayRecordLifecycleTest.Peer().use { peer ->
+            val client = client(peer)
+            try {
+                fm(client)
+                val bodies =
+                    listOf(
+                        "malformed".toByteArray(),
+                        BinaryPlist.encode(emptyList<Any>()),
+                        BinaryPlist.encode(mapOf("status" to "-50")),
+                        BinaryPlist.encode(mapOf("status" to 0.5)),
+                        BinaryPlist.encode(mapOf("status" to false)),
+                        BinaryPlist.encode(mapOf("status" to -50L)),
+                    )
+                for (body in bodies) {
+                    peer.reply = { it.respond(200, body) }
+                    val claim = client.claimMainAudioForStreaming()
+                    assertFalse(claim.claimed)
+                    assertFalse(claim.announced)
+                    assertFalse(client.modes.phoneOwnsAudio)
+                    assertEquals("POST", peer.next()!!.method)
+                    assertNull(peer.next(50))
+                }
+                peer.reply = { it.respond(200, BinaryPlist.encode(mapOf("status" to 0L))) }
+                assertTrue(client.claimMainAudioForStreaming().claimed)
+                assertTrue(client.modes.phoneOwnsAudio)
+                assertEquals("POST", peer.next()!!.method)
+                assertNull(peer.next(50))
+            } finally {
+                client.close()
+            }
+        }
+    }
+
     @Test fun actualBorrowSetupScopedTeardownAndReturnKeepTheFmPermanentOwner() {
         AirPlayRecordLifecycleTest.Peer().use { peer ->
             val client = client(peer)

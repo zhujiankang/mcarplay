@@ -28,6 +28,7 @@ internal class CarMicrophoneReceiver(
     private val received = AtomicLong()
     private val decoded = AtomicLong()
     private val delivered = AtomicLong()
+    private val signal = PcmSignalStats()
     val authenticatedPackets: Long get() = decoded.get()
 
     @Volatile private var closed = false
@@ -38,6 +39,7 @@ internal class CarMicrophoneReceiver(
     ) {
         val decoder = MicrophoneRtpDecoder(key)
         val resampler = PcmResampler(sampleRate, 1, 16_000)
+        val started = System.nanoTime()
         thread(name = "car-mic-input", isDaemon = true) {
             val buffer = ByteArray(8193)
             try {
@@ -52,6 +54,12 @@ internal class CarMicrophoneReceiver(
                     received.incrementAndGet()
                     val pcm = decoder.decode(buffer.copyOf(packet.length)) ?: continue
                     val count = decoded.incrementAndGet()
+                    signal.record(pcm)
+                    if (count == 1L) {
+                        log(
+                            "MIC: first authenticated input rate=$sampleRate afterReceiverStartMs=${(System.nanoTime() - started) / 1_000_000}",
+                        )
+                    }
                     val stereo = resampler.convert(pcm)
                     val mono = ByteArray(stereo.size / 2)
                     for (i in mono.indices step 2) {
@@ -72,7 +80,11 @@ internal class CarMicrophoneReceiver(
         }
     }
 
-    private fun summary() = log("MIC: received=${received.get()} authenticated=${decoded.get()} queued=${delivered.get()}")
+    private fun summary() =
+        log(
+            "MIC: received=${received.get()} authenticated=${decoded.get()} queued=${delivered.get()} " +
+                "queueRejected=${decoded.get() - delivered.get()} ${signal.summary()}",
+        )
 
     override fun close() {
         closed = true

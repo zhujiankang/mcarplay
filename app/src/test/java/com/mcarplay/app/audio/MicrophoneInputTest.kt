@@ -5,10 +5,12 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
@@ -19,6 +21,7 @@ class MicrophoneInputTest {
         sequence: Int,
         counter: Long,
         extension: Boolean = false,
+        silent: Boolean = false,
     ): ByteArray {
         val head = ByteArray(if (extension) 20 else 12)
         head[0] = if (extension) 0x90.toByte() else 0x80.toByte()
@@ -28,7 +31,16 @@ class MicrophoneInputTest {
         head[7] = 1
         head[11] = 1
         if (extension) head[15] = 1 // one extension word
-        val pcm = ByteArray(480) { if (it % 2 == 0) 0x12 else 0x34 }
+        val pcm =
+            ByteArray(480) {
+                if (silent) {
+                    0
+                } else if (it % 2 == 0) {
+                    0x12
+                } else {
+                    0x34
+                }
+            }
         val nonce = AirPlayCrypto.nonce64(counter)
         val sealed = AirPlayCrypto.chachaSeal(key, nonce, pcm, head.copyOfRange(4, 12))
         return head + sealed + nonce.copyOfRange(4, 12)
@@ -85,6 +97,37 @@ class MicrophoneInputTest {
             val later = packet(2, 2)
             sender.send(DatagramPacket(later, later.size, InetAddress.getLoopbackAddress(), port))
             assertNull(output.poll(100, TimeUnit.MILLISECONDS))
+        }
+    }
+
+    @Test fun signalDiagnosticsExcludeUnauthenticatedDataAndSeparateSilenceFromQueueRejection() {
+        val consumed = CountDownLatch(2)
+        val summaries = LinkedBlockingQueue<String>()
+        val receiver =
+            CarMicrophoneReceiver(
+                InetAddress.getByName("127.0.0.1"),
+                {
+                    consumed.countDown()
+                    false
+                },
+                { if (it.contains("authenticated=2")) summaries.offer(it) },
+            )
+        val port = receiver.localPort
+        receiver.start(key.copyOf(), 24000)
+        try {
+            DatagramSocket().use { sender ->
+                val invalid = packet(1, 1).also { it[20] = (it[20].toInt() xor 1).toByte() }
+                for (encrypted in listOf(invalid, packet(2, 2, silent = true), packet(3, 3))) {
+                    sender.send(DatagramPacket(encrypted, encrypted.size, InetAddress.getLoopbackAddress(), port))
+                }
+                assertTrue(consumed.await(2, TimeUnit.SECONDS))
+                receiver.close()
+                val summary = summaries.poll(2, TimeUnit.SECONDS) ?: error("missing receiver summary")
+                assertTrue(summary.contains("received=3 authenticated=2 queued=0 queueRejected=2"))
+                assertTrue(summary.contains("pcmSamples=480 zeroPackets=1 peak=4660 rms=3295"))
+            }
+        } finally {
+            receiver.close()
         }
     }
 }
