@@ -2841,8 +2841,10 @@ class AirPlayClient(
     fun runScreenStream(
         sessionKey: ByteArray?,
         displayUuid: String? = null,
+        expectedEpoch: Long = connectionEpoch,
     ): ScreenStreamInfo? {
-        val epoch = connectionEpoch
+        val epoch = expectedEpoch
+        if (!isConnectionCurrent(epoch)) return null
         // 对照 catplay（真车验证）：streamConnectionID = 随机 u64（+1 保证非零）
         val connectionId = java.security.SecureRandom().nextLong() and Long.MAX_VALUE or 1L
         val streamUuid =
@@ -2957,9 +2959,10 @@ class AirPlayClient(
         return ScreenStreamInfo(connectionId, dataPort, cipher)
     }
 
-    fun teardownScreenStream(): Boolean {
+    fun teardownScreenStream(expectedEpoch: Long = connectionEpoch): Boolean {
         val snapshot =
             synchronized(this) {
+                if (connectionEpoch != expectedEpoch) return false
                 val uuid = screenStreamUuid ?: return true
                 Triple(connectionEpoch, uuid, screenStreamConnectionId)
             }

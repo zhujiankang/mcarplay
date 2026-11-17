@@ -1,5 +1,7 @@
 # mcarplay
 
+> `0.1.19-debug` corrects screen retirement order: quiesce video, confirm scoped TEARDOWN, then close TCP. A retained sender owner covers rejection, timeout, cancellation, reconnect and failed restoration; orderly user disconnect defers pending socket disposal. A dual-TCP peer reproduces the previous EOF risk. Mercedes vehicle recovery and ASR remain unverified; see the [fix and test guide (Chinese)](docs/MERCEDES-CARLIFE-0.1.19.md).
+
 > `0.1.18-debug` fixes Mercedes re-entry after video retirement, adds bounded screen-only recovery, and preserves audio when leaving the CarWith UI. Speech negotiation shares the resource worker, borrows audio on demand, retires media output before input SETUP, and forwards assistant PCM through an advertised duplex stream. Actual vehicle recovery, ASR and 60FPS remain unverified; see the [fix and test guide (Chinese)](docs/MERCEDES-CARLIFE-0.1.18.md).
 
 > `0.1.17-debug` adds bounded independent network-iAP2 recovery and peer-subscription confirmation, terminated strings, phone artwork identifiers and CarLife progress. It adds Mercedes duplex speech descriptors with one bounded port-only retry, forwards the source FPS setting and records pipeline counters. The 0.1.16 screen lifecycle remains. Actual ASR, cluster artwork and 60FPS still require vehicle validation; see the [fix and test guide (Chinese)](docs/MERCEDES-CARLIFE-0.1.17.md).

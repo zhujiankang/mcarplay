@@ -1,5 +1,9 @@
 # Connection Diagnostics
 
+## 0.1.19屏幕关闭顺序
+
+`SCREEN-RETIRE:` 记录停发且保留TCP、退役未确认、确认后关闭和整会话清理四类阶段。TEARDOWN拒绝/超时、预算耗尽时旧sender仍有所有者；迟到应答不直接提交超时尝试。按阶段对照EOF/控制关闭，不能把回环结果记为实车通过；见 [0.1.19说明](MERCEDES-CARLIFE-0.1.19.md)。
+
 ## 0.1.18屏幕与语音诊断
 
 `SCREEN-RECOVERY:` 记录局部状态、attempt=1..3和EXHAUSTED；2.5秒退避与冷却后明确requestUI重开预算。视频局部错误不自动结束音频/控制；真实连接关闭仍完整清理。`MIC:` 记录语音借用拒绝、媒体退役未确认、输入退役状态。语音输出最多300ms PCM缓存，不记录音频正文。仅有SETUP接受或本地PCM回环不证明车载麦克风实际识别；详情见 [0.1.18说明](MERCEDES-CARLIFE-0.1.18.md)。

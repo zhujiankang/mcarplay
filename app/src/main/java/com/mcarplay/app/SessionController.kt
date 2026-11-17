@@ -8,6 +8,7 @@ import androidx.annotation.StringRes
 import com.mcarplay.app.airplay.AirPlayClient
 import com.mcarplay.app.airplay.AudioResourceStreams
 import com.mcarplay.app.airplay.CarPlayAudioIntent
+import com.mcarplay.app.airplay.OrderlyScreenRetirement
 import com.mcarplay.app.airplay.PairVerifyClient
 import com.mcarplay.app.airplay.ScreenResourceStreams
 import com.mcarplay.app.audio.AudioDuckingPrefs
@@ -1441,6 +1442,7 @@ object SessionController {
         val retiringClient = currentClient
         val retiringWifi = wifiConnector
         val retiringVideo = videoSender
+        val retiringScreens = screenResourceStreams
         val hadProjection = CarPlayService.mediaProjection != null
         try {
             ConnectionDiagnostics.finishCurrent(reason, false)
@@ -1475,6 +1477,7 @@ object SessionController {
                         retiringClient?.teardownSession()
                     }
                 } finally {
+                    runCatching { retiringScreens?.close() }
                     runCatching { retiringVideo?.stop() }
                     runCatching { retiringClient?.close() }
                     // 连接到此结束：先发 0xEA01 收掉本轮 EA 会话，免得车机挡住下一次（奥迪 EAP 泄漏保护）。
@@ -1718,7 +1721,11 @@ object SessionController {
         microphoneBridge.stop()
         metadataRelay.stop()
         currentClient?.beginOrderlyStop()
-        screenResourceStreams?.close()
+        if (preserveScreenSocket) {
+            screenResourceStreams?.quiesceForSessionStop()
+        } else {
+            screenResourceStreams?.close()
+        }
         screenResourceStreams = null
         stopAutoPlayWatch()
         val retiringSender = videoSender
@@ -4496,6 +4503,14 @@ object SessionController {
                                                     currentCarLifeSession === source &&
                                                     client.isConnectionCurrent(controlEpoch)
 
+                                            val retirement =
+                                                OrderlyScreenRetirement<VideoSender>(
+                                                    isCurrent = ::isCurrent,
+                                                    quiesce = { it.quiesceForOrderlyStop() },
+                                                    stop = { it.stop() },
+                                                    teardown = { isCurrent() && client.teardownScreenStream(controlEpoch) },
+                                                    log = ::appendLog,
+                                                )
                                             return ScreenResourceStreams(
                                                 isCurrent = ::isCurrent,
                                                 phoneOwnsScreen = { client.modes.phoneOwnsScreen },
@@ -4519,19 +4534,17 @@ object SessionController {
                                                 },
                                                 retireScreen = retire@{
                                                     if (!isCurrent()) return@retire false
-                                                    val previous =
-                                                        synchronized(this) {
-                                                            if (!isCurrent()) return@retire false
-                                                            val old = videoSender
-                                                            carLifeOutput = null
-                                                            videoSender = null
-                                                            old
-                                                        }
+                                                    synchronized(this) {
+                                                        if (!isCurrent() || !retirement.begin(videoSender)) return@retire false
+                                                        // The retirement owner now holds the socket across retries/cancellation.
+                                                        // Late onEnded cannot initiate another recovery for this sender.
+                                                        carLifeOutput = null
+                                                        videoSender = null
+                                                    }
                                                     source.releaseTouch()
                                                     ConnectionDiagnostics.timeline.screenOutput(diagnosticAttempt, true)
-                                                    appendLog("SCREEN: 主屏永久让出——退役屏幕流，保留 CarWith、音频与控制会话")
-                                                    previous?.stop()
-                                                    isCurrent() && client.teardownScreenStream()
+                                                    appendLog("SCREEN: 主屏永久让出——先停图像、确认退役，再关闭视频 TCP；音频与控制保留")
+                                                    retirement.finish()
                                                 },
                                                 restoreScreen = recover@{
                                                     fun failure(): ScreenResourceStreams.RestoreResult =
@@ -4544,9 +4557,10 @@ object SessionController {
                                                         return@recover ScreenResourceStreams.RestoreResult.ABORTED
                                                     }
                                                     // Retire any accepted/uncertain previous SETUP before creating another stream.
-                                                    if (!client.teardownScreenStream()) return@recover failure()
+                                                    if (!retirement.finish()) return@recover failure()
                                                     val resumed =
-                                                        client.runScreenStream(sessionKey, setup.displayUuid) ?: return@recover failure()
+                                                        client.runScreenStream(sessionKey, setup.displayUuid, controlEpoch)
+                                                            ?: return@recover failure()
                                                     if (!isCurrent()) return@recover ScreenResourceStreams.RestoreResult.ABORTED
                                                     val replacement = newScreenSender(resumed)
                                                     var restored = false
@@ -4557,7 +4571,7 @@ object SessionController {
                                                         }
                                                         if (!replacement.openDataPort() ||
                                                             !isCurrent() ||
-                                                            !client.record() ||
+                                                            !client.record(expectedEpoch = controlEpoch) ||
                                                             !isCurrent() ||
                                                             !replacement.start {} ||
                                                             !isCurrent()
@@ -4582,11 +4596,19 @@ object SessionController {
                                                         ScreenResourceStreams.RestoreResult.RESTORED
                                                     } finally {
                                                         if (!restored) {
-                                                            synchronized(this) {
-                                                                if (videoSender === replacement) videoSender = null
-                                                                if (carLifeOutput?.sender === replacement) carLifeOutput = null
+                                                            val held =
+                                                                synchronized(this) {
+                                                                    val adopted = retirement.begin(replacement)
+                                                                    if (videoSender === replacement) videoSender = null
+                                                                    if (carLifeOutput?.sender === replacement) carLifeOutput = null
+                                                                    adopted
+                                                                }
+                                                            if (held) {
+                                                                // A manual disconnect retains this owner until session TEARDOWN finishes.
+                                                                if (isCurrent()) retirement.finish()
+                                                            } else {
+                                                                replacement.stop() // Scope already disposed; never touches a successor.
                                                             }
-                                                            replacement.stop()
                                                         }
                                                     }
                                                 },
@@ -4596,6 +4618,7 @@ object SessionController {
                                                     }
                                                 },
                                                 onRetry = { reason -> appendLog("SCREEN-RECOVERY: $reason") },
+                                                onClose = retirement::close,
                                             )
                                         }
                                 }

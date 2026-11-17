@@ -11,10 +11,15 @@ internal class ScreenResourceStreams(
     private val onRetainedScreenVisibility: (Boolean) -> Unit = {},
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
     private val onRetry: (String) -> Unit = {},
+    private val onClose: () -> Unit = {},
 ) {
     enum class RestoreResult { RESTORED, ABORTED, FAILED }
 
     enum class State { ATTACHED, HIDDEN, DETACHED, RETIRE_PENDING, RESTORE_PENDING, EXHAUSTED, CLOSED }
+
+    private val disposed =
+        java.util.concurrent.atomic
+            .AtomicBoolean()
 
     @Volatile private var closed = false
 
@@ -33,9 +38,15 @@ internal class ScreenResourceStreams(
 
     val outputPaused: Boolean get() = !attached || !phoneOwnsScreen()
 
-    fun close() {
+    /** Stop future reconciliation, retaining pending TCP for the caller's orderly session TEARDOWN. */
+    fun quiesceForSessionStop() {
         closed = true
         state = State.CLOSED
+    }
+
+    fun close() {
+        quiesceForSessionStop()
+        if (disposed.compareAndSet(false, true)) onClose()
     }
 
     private fun alive(): Boolean = !closed && isCurrent()

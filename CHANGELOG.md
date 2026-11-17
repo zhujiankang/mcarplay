@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — mercedes-carlife (0.1.19)
+
+Validation: standard 1085 + remote bridge 24 tests passed (0 failures/errors/skips); Spotless, standard lint (0 errors), debug build and same-certificate APK verification passed. No new vehicle validation.
+
+Quiesce video and confirm scoped screen TEARDOWN before closing TCP. Retain ownership across local retry, failed restore and cancellation; defer pending disposal during orderly user disconnect and guard screen operations by connection generation. A real dual-TCP peer demonstrates the legacy EOF failure and verifies the corrected path. Vehicle acceptance remains pending.
+
+先暂停图像并确认屏幕TEARDOWN，再关闭视频TCP；局部重试、恢复失败及取消时仍持有待退役发送器。手动断开延期释放，屏幕操作增加连接代次保护。双TCP回环复现旧EOF风险并验证新流程；实车验收仍待完成。见 `docs/MERCEDES-CARLIFE-0.1.19.md`。
+
 ## Unreleased — mercedes-carlife (0.1.18)
 
 Validation: standard 1075 + remote bridge 24 tests passed (0 failures/errors/skips); Spotless, standard lint (0 errors), debug build and same-certificate APK verification passed. No new vehicle validation.
