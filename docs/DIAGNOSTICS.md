@@ -1,5 +1,11 @@
 # Connection Diagnostics
 
+## 0.1.24-homevideo 独立实验
+
+实验构建的版本为 0.1.24-homevideo-debug / 1240001。`HOME-VIDEO: test build; receiverMatched=true` 仅表示构建及接收端身份命中，不表示车机已显示或接受策略。`Home owns display` 表示保留视频 TCP/stream/crypto，`hidden frame written=N stream=... total=...` 是实际写出后的隐藏帧计数：首次及每150帧记录一次，不能当作车机解码/显示证据。`temporary borrow; video paused` 表示相机等临时借屏仍停图像；`display returned; reuse stream/crypto, no SETUP/RECORD` 表示复用路径。已有 SCREEN-RECOVERY/SCREEN-RETIRE 仍处理真实视频终止及会话结束。
+
+实验的 `screenOutputPaused` 区分传输与可见性：原车 Home 可以持屏且视频发送 FPS 非零，触摸仍拒绝；倒车暂停时传输标记为暂停。日志不保存视频/密钥。对照版本及完整动作时间，不能仅用非零FPS判定修复成功。见 [测试步骤](MERCEDES-CARLIFE-0.1.24-HOMEVIDEO.md)。
+
 ## 0.1.23首次连接基线、网络恢复与录音写出
 
 `BT-FIRST: legacy14` 表示已启用恢复后的蓝牙接纳/公告生命周期，不表示奔驰已经识别。0.1.23 不再使用下述历史 0.1.21 的 BT-ARBITER 硬接纳策略，ACCEPTED_IAP2 后仍需查看 LINK-NEGOTIATION/BT_LINK 与认证、首帧。

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — mercedes-carlife (0.1.24 home-video experiment)
+
+Add an opt-in debug-only Home video transport experiment for the verified Mercedes-Benz / MB_D-M-5 identity. A permanent display handover retains the original video TCP/stream/crypto and continues frames; real display ownership and touch remain with the car. Temporary camera borrowers still suspend frames, including a camera overlay started from native Home. Ordinary builds keep the previous screen lifecycle. Preserve the 0.1.23 Bluetooth entry path.
+
+新增显式开启、仅 debug 的奔驰 Home 持续视频实验。只匹配 Mercedes-Benz / MB_D-M-5；永久让屏保留原视频 TCP、流及加密计数并继续送帧，真实显示权和触摸仍归车机。倒车临时借屏仍停图像，包括从原车主页进入倒车的情况。普通构建保留原切屏策略，0.1.23 蓝牙入口不变。
+
+Validation: standard 1125 + remote bridge 24 tests passed (0 failures/errors/skips), including 9 new regressions; focused suite 68 passed. Spotless, standard lint (0 errors), debug build and same-certificate checks passed. No vehicle acceptance or claim that Home re-entry is fixed. See `docs/MERCEDES-CARLIFE-0.1.24-HOMEVIDEO.md`.
+
 ## Unreleased — mercedes-carlife (0.1.23)
 
 Restore the vehicle-tested 0.1.14 Bluetooth inbound and announcement lifecycle; remove the later hard admission gate and preserve the original in-flight outbound behavior, with checks before new probes. Add bounded passive recovery of verified car Wi-Fi before screen return, retaining the original network request. Add per-recording CarLife delivery summaries and isolate late microphone write failures by generation.

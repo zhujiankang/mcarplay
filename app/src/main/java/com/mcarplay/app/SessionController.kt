@@ -43,6 +43,7 @@ import com.mcarplay.app.carlife.CarLifeVideoAccessUnit
 import com.mcarplay.app.carlife.VoiceKeyRouter
 import com.mcarplay.app.carlife.mapCarLifeTouch
 import com.mcarplay.app.compat.CompatibilityPrefs
+import com.mcarplay.app.compat.MercedesHomeVideoExperiment
 import com.mcarplay.app.compat.MercedesStartup
 import com.mcarplay.app.compat.PassatReturnPolicy
 import com.mcarplay.app.compat.PassatReturnStrategy
@@ -4517,8 +4518,29 @@ object SessionController {
                                             override fun requestKeyFrame(): Boolean = currentCarLifeSession?.requestKeyFrame() == true
                                         }
 
+                                    val homeVideoEpoch = client.connectionGeneration
+                                    val homeVideoExperiment =
+                                        MercedesHomeVideoExperiment(
+                                            BuildConfig.MERCEDES_HOME_VIDEO_TEST,
+                                            client.isMercedesReceiver(),
+                                            client.modes,
+                                            isCurrent = {
+                                                !wasCancelled() &&
+                                                    !client.cancelled &&
+                                                    !client.sessionStopping &&
+                                                    currentClient === client &&
+                                                    client.isConnectionCurrent(homeVideoEpoch)
+                                            },
+                                        )
+                                    if (BuildConfig.MERCEDES_HOME_VIDEO_TEST) {
+                                        appendLog(
+                                            "HOME-VIDEO: test build; receiverMatched=${homeVideoExperiment.enabled}; touch follows real ownership",
+                                        )
+                                    }
+
                                     fun newScreenSender(screenInfo: AirPlayClient.ScreenStreamInfo): VideoSender {
                                         lateinit var sender: VideoSender
+                                        var hiddenFramesWritten = 0L
                                         sender =
                                             VideoSender(
                                                 host = host,
@@ -4534,6 +4556,7 @@ object SessionController {
                                                 fitExternalVideoToDisplay = true,
                                                 // 车机拿走主屏（原车界面、倒车影像等）时暂停屏幕视频，归还后从新的 IDR 恢复
                                                 phoneOwnsScreen = { client.modes.phoneOwnsScreen },
+                                                allowVideoWhileHidden = homeVideoExperiment::allowHiddenFrames,
                                                 onScreenOutputSuspended = { suspended ->
                                                     if (videoSender ===
                                                         sender
@@ -4543,6 +4566,15 @@ object SessionController {
                                                 },
                                                 onExternalFrameSent = { bytes ->
                                                     if (videoSender !== sender) return@VideoSender
+                                                    if (homeVideoExperiment.allowHiddenFrames()) {
+                                                        hiddenFramesWritten++
+                                                        if (hiddenFramesWritten == 1L || hiddenFramesWritten % 150L == 0L) {
+                                                            appendLog(
+                                                                "HOME-VIDEO: hidden frame written=$hiddenFramesWritten " +
+                                                                    "stream=${screenInfo.streamConnectionId} total=${sender.framesSentTotal}",
+                                                            )
+                                                        }
+                                                    }
                                                     ConnectionDiagnostics.timeline.media(diagnosticAttempt, true, bytes)
                                                     val now = android.os.SystemClock.uptimeMillis()
                                                     if (lastEnvironmentSampleAt == 0L ||
@@ -4610,20 +4642,38 @@ object SessionController {
                                                 phoneOwnsScreen = { client.modes.phoneOwnsScreen },
                                                 retainScreenStream = {
                                                     client.isMercedesReceiver() &&
-                                                        client.modes.screenPermanentlyOwnedByPhone
+                                                        (client.modes.screenPermanentlyOwnedByPhone || homeVideoExperiment.retainStream)
                                                 },
+                                                keepSendingWhenHidden = homeVideoExperiment::allowHiddenFrames,
                                                 onRetainedScreenVisibility = retained@{ visible ->
                                                     if (!isCurrent()) return@retained
                                                     if (!visible) {
                                                         source.releaseTouch()
-                                                        videoSender?.pauseScreenOutput()
-                                                        ConnectionDiagnostics.timeline.screenOutput(diagnosticAttempt, true)
-                                                        appendLog("SCREEN: 奔驰临时借屏——保留视频连接与激活，暂停图像；音频和控制继续")
+                                                        if (homeVideoExperiment.allowHiddenFrames()) {
+                                                            ConnectionDiagnostics.timeline.screenOutput(diagnosticAttempt, false)
+                                                            appendLog(
+                                                                "HOME-VIDEO: Home owns display; retain TCP/stream/crypto and continue frames; no TEARDOWN, no touch",
+                                                            )
+                                                        } else {
+                                                            videoSender?.pauseScreenOutput()
+                                                            ConnectionDiagnostics.timeline.screenOutput(diagnosticAttempt, true)
+                                                            appendLog("SCREEN: 奔驰临时借屏——保留视频连接与激活，暂停图像；音频和控制继续")
+                                                            if (homeVideoExperiment.enabled) {
+                                                                appendLog(
+                                                                    "HOME-VIDEO: temporary borrow; video paused, TCP retained",
+                                                                )
+                                                            }
+                                                        }
                                                     } else {
                                                         client.modes.onScreenStreamRestored()
-                                                        videoSender?.reprimeOnNextKeyFrame()
+                                                        if (!homeVideoExperiment.enabled) videoSender?.reprimeOnNextKeyFrame()
                                                         val requested = videoSender?.requestKeyFrame(fromReceiver = false) == true
                                                         appendLog("SCREEN: 奔驰归还主屏——复用原视频连接，等待新的 IDR；已请求=$requested，无 SETUP/RECORD")
+                                                        if (homeVideoExperiment.enabled) {
+                                                            appendLog(
+                                                                "HOME-VIDEO: display returned; reuse stream/crypto, no SETUP/RECORD",
+                                                            )
+                                                        }
                                                     }
                                                 },
                                                 retireScreen = retire@{

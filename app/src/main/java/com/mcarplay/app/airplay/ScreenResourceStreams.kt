@@ -12,6 +12,7 @@ internal class ScreenResourceStreams(
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
     private val onRetry: (String) -> Unit = {},
     private val onClose: () -> Unit = {},
+    private val keepSendingWhenHidden: () -> Boolean = { false },
 ) {
     enum class RestoreResult { RESTORED, ABORTED, FAILED }
 
@@ -30,13 +31,14 @@ internal class ScreenResourceStreams(
         private set
 
     private var retainedHidden = false
+    private var retainedOutputPaused = false
     private var retirementPending = false
     private var failures = 0
     private var nextAttempt = 0L
 
     val recoveryPending: Boolean get() = state == State.RETIRE_PENDING || state == State.RESTORE_PENDING
 
-    val outputPaused: Boolean get() = !attached || !phoneOwnsScreen()
+    val outputPaused: Boolean get() = !attached || (!phoneOwnsScreen() && !keepSendingWhenHidden())
 
     /** Stop future reconciliation, retaining pending TCP for the caller's orderly session TEARDOWN. */
     fun quiesceForSessionStop() {
@@ -89,8 +91,10 @@ internal class ScreenResourceStreams(
         try {
             if (attached && retainScreenStream()) {
                 val visible = phoneOwnsScreen()
-                if (retainedHidden != !visible) {
+                val paused = !visible && !keepSendingWhenHidden()
+                if (retainedHidden != !visible || retainedOutputPaused != paused) {
                     retainedHidden = !visible
+                    retainedOutputPaused = paused
                     onRetainedScreenVisibility(visible)
                 }
                 state = if (visible) State.ATTACHED else State.HIDDEN

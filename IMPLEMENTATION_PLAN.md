@@ -1,5 +1,11 @@
 # mcarplay：CarWith 转无线 CarPlay 实施计划
 
+## 2026-11-19：0.1.24 Home 持续视频独立实验
+
+本地验证：standard1125、remote bridge24，均零失败/错误/跳过；定向68项、Spotless、lint（0错误）、实验APK及同证书检查通过。
+
+基于 0.1.23 / 1586b58，在 mercedes-carlife 分支加入默认关闭的 debug 构建开关。交付实验包为 0.1.24-homevideo-debug / 1240001；普通包为 0.1.24-debug / 1240000。只对已核对的 Mercedes-Benz / MB_D-M-5 保留原视频流并在原车永久持屏时持续送图像；倒车临时借屏仍暂停，资源归属与触摸不放开。明确停止、真实 EOF 和会话更替仍清理或走原恢复流程。本轮不混入后台保活/音频发送优化，不改变首次蓝牙路径。详见 [实验说明](docs/MERCEDES-CARLIFE-0.1.24-HOMEVIDEO.md)。无本版实车结果。
+
 ## 2026-11-17：0.1.23恢复首次连接基线
 
 本地门禁：standard 1116、remote bridge 24，均零失败/错误/跳过；Spotless、lint（0错误）、debug 构建与同证书检查通过。

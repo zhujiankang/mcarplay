@@ -6,6 +6,72 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ScreenResourceStreamsTest {
+    @Test fun continuousHomeDetectsCameraOverlayEvenWhenVisibilityStaysHidden() {
+        val modes = ModeArbiter()
+        val policy =
+            com.mcarplay.app.compat
+                .MercedesHomeVideoExperiment(true, true, modes)
+        val transitions = mutableListOf<Pair<Boolean, Boolean>>()
+        val streams =
+            ScreenResourceStreams(
+                isCurrent = { true },
+                phoneOwnsScreen = { modes.phoneOwnsScreen },
+                retireScreen = { error("Must retain the original stream") },
+                restoreScreen = { error("Must not SETUP/RECORD") },
+                onFailure = { error(it) },
+                retainScreenStream = { policy.retainStream },
+                keepSendingWhenHidden = policy::allowHiddenFrames,
+                onRetainedScreenVisibility = { transitions += it to policy.allowHiddenFrames() },
+            )
+        modes.changeResponse(takeScreen())
+        streams.reconcile()
+        assertFalse(streams.outputPaused)
+        modes.changeResponse(mapOf("resources" to listOf(mapOf("resourceID" to 1L, "transferType" to 3L))))
+        streams.reconcile()
+        assertTrue(streams.outputPaused)
+        modes.changeResponse(mapOf("resources" to listOf(mapOf("resourceID" to 1L, "transferType" to 4L))))
+        streams.reconcile()
+        assertFalse(streams.outputPaused)
+        assertFalse(modes.phoneOwnsScreen)
+        assertTrue(modes.acquireScreen(true) { true })
+        streams.reconcile(forceRebuild = true)
+        assertEquals(listOf(false to true, false to false, false to true, true to false), transitions)
+        assertTrue(streams.attached)
+    }
+
+    @Test fun realStreamEndStillRetiresBeforeReplacementDuringHomeExperiment() {
+        val modes = ModeArbiter()
+        val events = mutableListOf<String>()
+        val policy =
+            com.mcarplay.app.compat
+                .MercedesHomeVideoExperiment(true, true, modes)
+        val streams =
+            ScreenResourceStreams(
+                isCurrent = { true },
+                phoneOwnsScreen = { modes.phoneOwnsScreen },
+                retireScreen = {
+                    events += "retire"
+                    true
+                },
+                restoreScreen = {
+                    events += "restore"
+                    ScreenResourceStreams.RestoreResult.RESTORED
+                },
+                onFailure = { error(it) },
+                retainScreenStream = { policy.retainStream },
+                keepSendingWhenHidden = policy::allowHiddenFrames,
+            )
+        modes.changeResponse(takeScreen())
+        streams.reconcile()
+        streams.streamEnded()
+        streams.reconcile()
+        assertEquals(listOf("retire"), events)
+        assertFalse(streams.attached)
+        assertTrue(modes.acquireScreen(true) { true })
+        streams.reconcile()
+        assertEquals(listOf("retire", "restore"), events)
+    }
+
     @Test fun retainedBorrowReturnsWithoutScreenTeardownSetupOrRecord() {
         val modes = ModeArbiter()
         val visibility = mutableListOf<Boolean>()

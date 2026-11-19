@@ -66,6 +66,12 @@ internal class ModeArbiter {
 
     @get:Synchronized val phoneOwnsScreen: Boolean get() = resources.getValue(SCREEN).owner == Entity.CONTROLLER
 
+    /** Home owns the display without a temporary borrower such as a reversing camera. */
+    @get:Synchronized val carOwnsScreenWithoutBorrow: Boolean get() {
+        val screen = resources.getValue(SCREEN)
+        return screen.owner == Entity.ACCESSORY && !screen.borrowed
+    }
+
     @get:Synchronized val phoneOwnsAudio: Boolean get() = resources.getValue(MAIN_AUDIO).owner == Entity.CONTROLLER
 
     @get:Synchronized val phoneBorrowsAudio: Boolean get() = resources.getValue(MAIN_AUDIO).phoneBorrowing

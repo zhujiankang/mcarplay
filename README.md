@@ -1,5 +1,7 @@
 # mcarplay
 
+> `0.1.24-homevideo-debug` is an opt-in debug experiment for Mercedes-Benz / MB_D-M-5: retain video TCP/crypto and continue frames while native Home owns the display. Camera loans still pause frames and touch follows real ownership. Ordinary builds keep the previous behavior; 0.1.23 Bluetooth entry is preserved. No vehicle acceptance yet. See [test guide](docs/MERCEDES-CARLIFE-0.1.24-HOMEVIDEO.md).
+
 > `0.1.23-debug` restores the vehicle-tested 0.1.14 Bluetooth admission and announcement lifecycle, removing the later hard gate. It adds bounded car Wi-Fi rebinding before screen return and per-recording microphone delivery summaries. Test cold pairing directly with this APK; no older APK initialization is needed. Cold discovery, Home re-entry and speech recognition still require separate vehicle acceptance. See [fixes and test guide](docs/MERCEDES-CARLIFE-0.1.23.md).
 
 > `0.1.21-debug` prevents competing inbound/outbound Bluetooth negotiations, cancels pending probes when the car connects, isolates duplicate connections and refreshes service caches after pairing changes. It adds byte/DETECT/frame negotiation diagnostics. The reported 0.1.20 failure occurred before Wi-Fi/AirPlay; Mercedes reconnection still requires vehicle testing. See the [fix and test guide (Chinese)](docs/MERCEDES-CARLIFE-0.1.21.md).

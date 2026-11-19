@@ -70,6 +70,8 @@ class VideoSender(
     /** 主屏归属导致的屏幕视频暂停/恢复；用于让诊断层区分“主动暂停”和“传输停滞”。 */
     private val onScreenOutputSuspended: (Boolean) -> Unit = {},
     private val uptimeMs: () -> Long = { android.os.SystemClock.uptimeMillis() },
+    /** Debug experiment: allow transport while Home owns the display; never changes real ownership. */
+    private val allowVideoWhileHidden: () -> Boolean = { false },
 ) {
     @Volatile
     private var width: Int = (width / 2) * 2
@@ -201,7 +203,7 @@ class VideoSender(
     private fun screenFeedPaused(): Boolean {
         val owns =
             try {
-                phoneOwnsScreen()
+                phoneOwnsScreen() || allowVideoWhileHidden()
             } catch (_: Exception) {
                 false
             }
@@ -544,7 +546,7 @@ class VideoSender(
         // 原车界面/倒车影像的车机（失败方向必须保守）。
         val ownsScreen =
             try {
-                phoneOwnsScreen()
+                phoneOwnsScreen() || allowVideoWhileHidden()
             } catch (error: Exception) {
                 if (screenOwnershipErrorLogged.compareAndSet(false, true)) {
                     log("VIDEO: 主屏归属读取失败，按车机持有处理（暂停发帧）- ${error.message}")

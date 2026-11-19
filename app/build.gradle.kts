@@ -15,7 +15,9 @@ plugins {
  * Optional signed build suffix: -Pmcarplay.buildNumber=N.
  * Tagged releases use the base version; update it before publishing a new tag.
  */
-val appVersionName = "0.1.23"
+val appVersionName = "0.1.24"
+// Explicit debug experiment; ordinary builds retain the production screen lifecycle.
+val mercedesHomeVideoTest = providers.gradleProperty("mcarplay.mercedesHomeVideoTest").orNull == "true"
 // 可覆盖安装的 remote 诊断包；兼容第一版诊断包的构建参数。
 val diagnosticsBuild =
     providers
@@ -65,6 +67,12 @@ check(buildNumber == null || buildNumber in 1..9_999) {
 val effectiveVersionName = if (buildNumber == null) appVersionName else "$appVersionName.$buildNumber"
 val effectiveVersionCode =
     if (buildNumber == null) appVersionCode * 10_000 else appVersionCode * 10_000 + buildNumber
+check(!mercedesHomeVideoTest || (buildNumber == null && releaseTag.isEmpty())) {
+    "The home-video experiment cannot be combined with release tags or signed build numbers"
+}
+check(!mercedesHomeVideoTest || gradle.startParameter.taskNames.none { it.contains("release", ignoreCase = true) }) {
+    "The home-video experiment is debug-only"
+}
 
 /**
  * 发布签名配置：从仓库外的 `keystore.properties` 读取（已在 .gitignore 排除）。
@@ -118,10 +126,11 @@ android {
         applicationId = "com.mcarplay.app"
         minSdk = 31
         targetSdk = 34
-        versionCode = effectiveVersionCode
+        versionCode = effectiveVersionCode + if (mercedesHomeVideoTest) 1 else 0
         versionName = effectiveVersionName
         buildConfigField("String", "BASE_VERSION", "\"$appVersionName\"")
         buildConfigField("String", "RELEASE_TAG", "\"$releaseTag\"")
+        buildConfigField("boolean", "MERCEDES_HOME_VIDEO_TEST", "false")
     }
 
     signingConfigs {
@@ -164,7 +173,8 @@ android {
             // **不要加 applicationIdSuffix**：本项目 debug 包就是日常使用的包——
             // Shizuku 授权是按包名授予的，改包名会要求重新授权；AGENTS.md 里的
             // `run-as com.mcarplay.app` 调试链路也会一起失效。
-            versionNameSuffix = "-debug"
+            versionNameSuffix = if (mercedesHomeVideoTest) "-homevideo-debug" else "-debug"
+            buildConfigField("boolean", "MERCEDES_HOME_VIDEO_TEST", mercedesHomeVideoTest.toString())
         }
     }
 
